@@ -27,6 +27,8 @@ rules_app = typer.Typer(help="Categorization rules.")
 app.add_typer(rules_app, name="rules")
 review_app = typer.Typer(help="Review queue for uncategorized transactions.")
 app.add_typer(review_app, name="review")
+match_app = typer.Typer(help="Match transfers and split-expense groups.")
+app.add_typer(match_app, name="match")
 
 _OFX_EXTS = {".ofx", ".qfx"}
 _CSV_EXTS = {".csv"}
@@ -310,6 +312,20 @@ def review_export(
         typer.echo(f"Wrote {out}")
     else:
         typer.echo(text)
+
+
+@match_app.command("transfers")
+def match_transfers_cmd(
+    rebuild: bool = typer.Option(False, "--rebuild", help="Delete generic transfer groups and rematch."),
+) -> None:
+    """Pair hinted transfer legs across accounts into transfer groups."""
+    from bankapp.match import transfers
+
+    cfg, conn = _load()
+    n = transfers.match_transfers(
+        conn, cfg.transfers.window_days, cfg.transfers.tolerance_minor, rebuild=rebuild
+    )
+    typer.echo(f"Matched {n} transfer pair(s).")
 
 
 @app.command()
