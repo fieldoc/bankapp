@@ -1,0 +1,70 @@
+# bankapp config example. Copy to your config location and edit.
+#   Config resolution: $FINANCE_CONFIG
+#     > %APPDATA%\bankapp\config.toml  (Windows)
+#     > ~/.config/bankapp/config.toml  (macOS/Linux)
+#   DB resolution:     $FINANCE_DB > db_path (below)
+# All paths are ~-expanded, so this works on both Windows and macOS.
+
+timezone   = "America/Vancouver"
+db_path    = "~/finance/finance.db"
+ingest_dir = "~/finance/inbox"        # TD file-drop folder
+
+[[accounts]]
+key = "td-chequing"
+institution = "td"
+type = "chequing"
+currency = "CAD"
+ofx_acctid = ""                        # fill from a real export; enables OFX auto-mapping
+
+[[accounts]]
+key = "td-visa"
+institution = "td"
+type = "visa"
+currency = "CAD"
+ofx_acctid = ""
+
+[[accounts]]
+key = "ws-cash"
+institution = "wealthsimple"
+type = "cash"
+currency = "CAD"
+
+[plaid]
+enabled     = false                    # flip on after the TP.0 spike succeeds
+environment = "production"
+# account mapping: Plaid account_id -> accounts.key, filled by `finance plaid link`
+# credentials live in the OS keyring, never here
+
+[budgets]                              # per-category monthly limits (CAD)
+groceries      = "600.00"
+dining         = "250.00"
+subscriptions  = "60.00"
+
+[[goals]]                              # the "real joy" fund(s)
+name           = "example-trip"
+target         = "3000.00"
+start_date     = "2026-07-01"
+target_date    = "2027-02-01"
+allocation_pct = 100                   # share of monthly net savings credited to this goal
+
+[advisor]
+leak_threshold = "15.00"               # txns under this feed the leak report
+
+[transfers]
+window_days   = 7
+tolerance     = "0.00"
+seed_patterns = ["tfr-to", "tfr-fr", "eft credit", "eft debit"]   # -> rules(source='seed', role_hint='transfer')
+
+[[templates]]                          # rent - the 3-leg chain (placeholder values; fill real ones)
+name = "rent"
+kind = "split_expense"
+expected_amount    = "2400.00"         # FULL rent (2X)
+share              = "1/2"             # 50/50
+day_of_month       = 1
+expense_account    = "ws-cash"
+expense_pattern    = "landlord pattern here"
+reimburse_account  = "td-chequing"
+reimburser_pattern = "e-transfer.*roommate name here"   # Interac SENDER NAME - config, not code
+amount_tolerance   = "5.00"
+window_days        = 45
+link_transfer      = true
