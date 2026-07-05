@@ -76,3 +76,81 @@ def test_at2_transfer_netted(app_env, memkeyring):
     assert members == 2
     assert net == 0
     assert kept == 2
+
+
+# ---- AT3: the 3-leg rent chain ----
+
+def _seed_rent_rows(db_path, *, expense=-240000, reimb=120000, reimb_date="2026-01-03"):
+    """Seed one month's rent chain directly (WS + transfer legs can't come from files)."""
+    conn = dbmod.connect(db_path)
+    ws = conn.execute("SELECT id FROM accounts WHERE key='ws-cash'").fetchone()[0]
+    td = conn.execute("SELECT id FROM accounts WHERE key='td-chequing'").fetchone()[0]
+
+    def add(acct, date_s, amt, desc, dedup, source="ws"):
+        return insert_raw_txn(conn, acct, posted_date=date_s, amount_minor=amt, currency="CAD",
+                              description_raw=desc, description_norm=desc.lower(),
+                              dedup_key=dedup, source=source)
+
+    add(ws, "2026-01-01", expense, "LANDLORD RENT PAYMENT", "wsid:exp")            # expense (full rent)
+    add(td, "2026-01-01", -240000, "TFR-TO WEALTHSIMPLE", "fitid:tout", "ofx")     # transfer out
+    add(ws, "2026-01-01", 240000, "TRANSFER FROM TD", "wsid:tin")                  # transfer in
+    add(td, reimb_date, reimb, "ETRANSFER FROM ROOMMATE JOHN", "fitid:reimb", "ofx")  # roommate
+    conn.close()
+
+
+def test_at3_rent_chain(app_env, memkeyring):
+    """Rent chain -> one group with 4 members; Jan spend == -my_share; receivable settled."""
+    runner.invoke(app, ["init"])   # upserts the rent template from config
+    _seed_rent_rows(app_env["db"])
+    assert runner.invoke(app, ["match", "all"]).exit_code == 0
+
+    conn = dbmod.connect(app_env["db"])
+    gid = conn.execute("SELECT id FROM groups WHERE type='split_expense' AND period_key='2026-01'").fetchone()[0]
+    members = conn.execute("SELECT COUNT(*) FROM group_members WHERE group_id=?", (gid,)).fetchone()[0]
+    jan_spend = conn.execute(
+        "SELECT net_minor FROM v_monthly_cashflow WHERE month='2026-01'"
+    ).fetchone()[0]
+    rec = conn.execute("SELECT status, outstanding_minor FROM v_receivables WHERE group_id=?", (gid,)).fetchone()
+    conn.close()
+
+    assert members == 4
+    assert jan_spend == -120000       # my 50% share only
+    assert rec["status"] == "settled"
+    assert rec["outstanding_minor"] == 0
+
+
+def test_at3_underpaid(app_env, memkeyring):
+    """Roommate pays X-50 -> underpaid, outstanding 5000 minor."""
+    from datetime import date
+
+    from bankapp import config as configmod
+    from bankapp.match import splits
+
+    runner.invoke(app, ["init"])
+    _seed_rent_rows(app_env["db"], reimb=115000)  # $50 short
+
+    cfg = configmod.load_config(app_env["config"])
+    conn = dbmod.init_db(cfg.db_path)
+    splits.match_splits(conn, today=date(2026, 3, 1))  # past the 45-day window
+    r = conn.execute("SELECT status, outstanding_minor FROM v_receivables WHERE period_key='2026-01'").fetchone()
+    conn.close()
+    assert r["status"] == "underpaid"
+    assert r["outstanding_minor"] == 5000
+
+
+def test_at3_late_cross_month(app_env, memkeyring):
+    """Roommate pays in February -> settles January (late-flagged while open, never lost)."""
+    from datetime import date
+
+    from bankapp import config as configmod
+    from bankapp.match import splits
+
+    runner.invoke(app, ["init"])
+    _seed_rent_rows(app_env["db"], reimb=120000, reimb_date="2026-02-05")
+
+    cfg = configmod.load_config(app_env["config"])
+    conn = dbmod.init_db(cfg.db_path)
+    splits.match_splits(conn, today=date(2026, 2, 10))
+    jan = conn.execute("SELECT status FROM groups WHERE period_key='2026-01'").fetchone()["status"]
+    conn.close()
+    assert jan == "settled"

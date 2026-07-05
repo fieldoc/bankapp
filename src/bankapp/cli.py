@@ -57,16 +57,19 @@ def sync_accounts(conn: sqlite3.Connection, cfg: Config) -> None:
 
 @app.command()
 def init() -> None:
-    """Create the DB, apply schema, sync accounts, and upsert seed transfer rules."""
+    """Create the DB, apply schema, sync accounts, upsert seed rules + templates."""
     from bankapp.classify import engine as classify
+    from bankapp.match import splits
 
     cfg = configmod.load_config()
     conn = dbmod.init_db(cfg.db_path)
     sync_accounts(conn, cfg)
     seeded = classify.upsert_seed_rules(conn, cfg.transfers.seed_patterns)
+    ntmpl = splits.upsert_templates(conn, cfg.templates)
     typer.echo(f"Initialized DB at {cfg.db_path}")
     typer.echo(f"Accounts: {len(cfg.accounts)} synced")
     typer.echo(f"Seed transfer rules: {seeded} added")
+    typer.echo(f"Templates: {ntmpl} upserted")
 
 
 @accounts_app.command("list")
@@ -328,6 +331,33 @@ def match_transfers_cmd(
     typer.echo(f"Matched {n} transfer pair(s).")
 
 
+@match_app.command("splits")
+def match_splits_cmd() -> None:
+    """Build split-expense groups (rent chain, receivables) from templates."""
+    from bankapp.match import splits
+
+    cfg, conn = _load()
+    splits.upsert_templates(conn, cfg.templates)
+    n = splits.match_splits(conn)
+    typer.echo(f"Processed {n} split period(s).")
+
+
+@match_app.command("all")
+def match_all_cmd(
+    rebuild: bool = typer.Option(False, "--rebuild", help="Rebuild generic transfer groups."),
+) -> None:
+    """Run splits BEFORE transfers (splits claim their own transfer legs first)."""
+    from bankapp.match import splits, transfers
+
+    cfg, conn = _load()
+    splits.upsert_templates(conn, cfg.templates)
+    ns = splits.match_splits(conn)
+    nt = transfers.match_transfers(
+        conn, cfg.transfers.window_days, cfg.transfers.tolerance_minor, rebuild=rebuild
+    )
+    typer.echo(f"splits: {ns} period(s); transfers: {nt} pair(s)")
+
+
 @app.command()
 def refresh() -> None:
     """One-shot pipeline: sync WS -> ingest inbox -> (categorize -> match -> snapshot).
@@ -358,7 +388,15 @@ def refresh() -> None:
     n = classify.categorize(conn)
     typer.echo(f"categorized: {n}")
 
-    # 4+. match all / snapshot balances wired in later phases.
+    # 4. Match splits (which claim their transfer legs) then generic transfers.
+    from bankapp.match import splits, transfers
+
+    splits.upsert_templates(conn, cfg.templates)
+    ns = splits.match_splits(conn)
+    nt = transfers.match_transfers(conn, cfg.transfers.window_days, cfg.transfers.tolerance_minor)
+    typer.echo(f"match: {ns} split period(s), {nt} transfer pair(s)")
+
+    # 5+. snapshot balances wired in later phases.
     typer.echo("refresh complete")
 
 
