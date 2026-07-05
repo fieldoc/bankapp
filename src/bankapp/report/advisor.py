@@ -317,3 +317,211 @@ def leaks_from_db(conn: sqlite3.Connection, threshold_minor: int) -> list[LeakRo
          for r in rows),
         threshold_minor,
     )
+
+
+# ---- T10.1 goals ------------------------------------------------------------
+
+class AllocationError(ValueError):
+    """Active goal allocations exceed 100% of the savings pool."""
+
+
+def upsert_goals(conn: sqlite3.Connection, goals) -> int:
+    """Upsert config goals by name. Validates total active allocation <= 100%."""
+    total = sum(g.allocation_pct for g in goals)
+    if total > 100:
+        raise AllocationError(f"goal allocations total {total}% > 100%")
+    n = 0
+    with conn:
+        for g in goals:
+            conn.execute(
+                """INSERT INTO goals(name, target_minor, currency, start_date, target_date, allocation_pct, note, active)
+                   VALUES (?,?,?,?,?,?,?,1)
+                   ON CONFLICT(name) DO UPDATE SET
+                     target_minor=excluded.target_minor, currency=excluded.currency,
+                     start_date=excluded.start_date, target_date=excluded.target_date,
+                     allocation_pct=excluded.allocation_pct, note=excluded.note""",
+                (g.name, g.target_minor, g.currency, g.start_date, g.target_date, g.allocation_pct, g.note),
+            )
+            n += 1
+    return n
+
+
+@dataclass(frozen=True)
+class GoalStatus:
+    name: str
+    target_minor: int
+    funded_minor: int
+    currency: str
+    allocation_pct: int
+    pct_complete: float
+    pace: str  # 'on_track' | 'behind' | 'no_target'
+
+
+def _net_since(conn: sqlite3.Connection, start_date: str, currency: str) -> int:
+    row = conn.execute(
+        "SELECT COALESCE(SUM(effective_minor), 0) FROM v_effective WHERE posted_date >= ? AND currency = ?",
+        (start_date, currency),
+    ).fetchone()
+    return row[0] or 0
+
+
+def goals_status(conn: sqlite3.Connection, today: Optional[date] = None) -> list[GoalStatus]:
+    today = today or date.today()
+    rows = conn.execute(
+        """SELECT name, target_minor, currency, start_date, target_date, allocation_pct
+           FROM goals WHERE active = 1 ORDER BY name"""
+    ).fetchall()
+    out: list[GoalStatus] = []
+    for g in rows:
+        net = _net_since(conn, g["start_date"], g["currency"])
+        funded = round(net * g["allocation_pct"] / 100)
+        pct = (funded / g["target_minor"] * 100) if g["target_minor"] > 0 else 0.0
+        pace = "no_target"
+        if g["target_date"]:
+            start = date.fromisoformat(g["start_date"])
+            target = date.fromisoformat(g["target_date"])
+            total_days = max(1, (target - start).days)
+            elapsed = min(max((today - start).days, 0), total_days)
+            expected = g["target_minor"] * elapsed / total_days
+            pace = "on_track" if funded >= expected else "behind"
+        out.append(GoalStatus(g["name"], g["target_minor"], funded, g["currency"],
+                              g["allocation_pct"], pct, pace))
+    return out
+
+
+# ---- T10.2 digest -----------------------------------------------------------
+
+def _dq_notes(conn: sqlite3.Connection) -> dict:
+    from bankapp import db as dbmod
+
+    return {
+        "last_import": conn.execute("SELECT MAX(imported_at) FROM import_log").fetchone()[0],
+        "last_ws_sync": dbmod.get_meta(conn, "ws_last_sync"),
+        "ws_last_error": (dbmod.get_meta(conn, "ws_last_error") or None),
+    }
+
+
+def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
+    """Bundle the advisor state as a stable-keyed dict (the advisor skill's JSON input)."""
+    today = today or date.today()
+    month = today.strftime("%Y-%m")
+    cashflow = monthly_cashflow(conn)
+    history = net_worth_history(conn)
+
+    # net worth delta vs the prior month-end (per currency), if available
+    nw_delta = {}
+    by_cur: dict[str, list] = {}
+    for h in history:
+        by_cur.setdefault(h["currency"], []).append(h)
+    for cur, series in by_cur.items():
+        if len(series) >= 2:
+            nw_delta[cur] = series[-1]["net_worth_minor"] - series[-2]["net_worth_minor"]
+
+    return {
+        "as_of": today.isoformat(),
+        "month": month,
+        "net_worth": [
+            {"currency": r.currency, "net_worth_minor": r.net_worth_minor, "freshest_as_of": r.freshest_as_of}
+            for r in net_worth(conn)
+        ],
+        "net_worth_delta_minor": nw_delta,
+        "savings": [
+            {"month": r.month, "currency": r.currency, "income_minor": r.income_minor,
+             "spend_minor": r.spend_minor, "net_minor": r.net_minor, "savings_rate": round(r.savings_rate, 4)}
+            for r in cashflow[-6:]
+        ],
+        "budgets": [
+            {"category": b.category, "limit_minor": b.limit_minor, "actual_minor": b.actual_minor,
+             "over": b.over, "pace_warn": b.pace_warn}
+            for b in budget_status(conn, month, today)
+        ],
+        "subscriptions": [
+            {"merchant": s.merchant, "cadence": s.cadence, "monthly_cost_minor": s.monthly_cost_minor,
+             "last_charge": s.last_charge, "count": s.count, "price_creep": s.price_creep, "currency": s.currency}
+            for s in subscriptions_from_db(conn)
+        ],
+        "top_leaks": [
+            {"merchant": l.merchant, "month": l.month, "total_minor": l.total_minor,
+             "count": l.count, "currency": l.currency}
+            for l in leaks_from_db(conn, cfg.leak_threshold_minor)[:10]
+        ],
+        "receivables": [
+            dict(r) for r in conn.execute(
+                """SELECT template, period_key, status, outstanding_minor, age_days
+                   FROM v_receivables WHERE outstanding_minor > 0 ORDER BY age_days DESC"""
+            )
+        ],
+        "goals": [
+            {"name": g.name, "target_minor": g.target_minor, "funded_minor": g.funded_minor,
+             "currency": g.currency, "allocation_pct": g.allocation_pct,
+             "pct_complete": round(g.pct_complete, 2), "pace": g.pace}
+            for g in goals_status(conn, today)
+        ],
+        "uncategorized_count": _uncategorized_count(conn),
+        "pending_transfer_legs": [
+            {"id": r["id"], "amount_minor": r["amount_minor"], "age_days": r["age_days"]}
+            for r in conn.execute("SELECT id, amount_minor, age_days FROM v_pending_transfers")
+        ],
+        "data_quality": _dq_notes(conn),
+    }
+
+
+def _uncategorized_count(conn: sqlite3.Connection) -> int:
+    from bankapp.classify import review
+
+    return review.count(conn)
+
+
+def render_digest_markdown(d: dict) -> str:
+    from bankapp import money
+
+    def m(minor, cur="CAD"):
+        return f"{money.from_minor(minor, cur)} {cur}"
+
+    lines = [f"# Finance digest — {d['as_of']}", ""]
+    lines.append("## Net worth")
+    for nw in d["net_worth"]:
+        delta = d["net_worth_delta_minor"].get(nw["currency"])
+        d_str = f"  (delta {m(delta, nw['currency'])})" if delta is not None else ""
+        lines.append(f"- {m(nw['net_worth_minor'], nw['currency'])} as of {nw['freshest_as_of']}{d_str}")
+
+    if d["savings"]:
+        s = d["savings"][-1]
+        lines += ["", "## This month",
+                  f"- income {m(s['income_minor'])}, spend {m(s['spend_minor'])}, "
+                  f"net {m(s['net_minor'])}, savings rate {s['savings_rate'] * 100:.1f}%"]
+
+    over = [b for b in d["budgets"] if b["over"] or b["pace_warn"]]
+    if over:
+        lines += ["", "## Budgets needing attention"]
+        for b in over:
+            tag = "OVER" if b["over"] else "pace"
+            lines.append(f"- {b['category']}: {m(b['actual_minor'])} / {m(b['limit_minor'])} [{tag}]")
+
+    if d["subscriptions"]:
+        lines += ["", "## Subscriptions"]
+        for s in d["subscriptions"]:
+            creep = " [price up]" if s["price_creep"] else ""
+            lines.append(f"- {s['merchant']} ~{m(s['monthly_cost_minor'], s['currency'])}/mo ({s['cadence']}){creep}")
+
+    if d["top_leaks"]:
+        lines += ["", "## Top leaks"]
+        for l in d["top_leaks"][:5]:
+            lines.append(f"- {l['merchant']} {l['month']}: {m(l['total_minor'], l['currency'])} (x{l['count']})")
+
+    if d["goals"]:
+        lines += ["", "## Goals"]
+        for g in d["goals"]:
+            lines.append(f"- {g['name']}: {m(g['funded_minor'], g['currency'])} / "
+                         f"{m(g['target_minor'], g['currency'])} ({g['pct_complete']:.0f}%, {g['pace']})")
+
+    if d["receivables"]:
+        lines += ["", "## Receivables"]
+        for r in d["receivables"]:
+            lines.append(f"- {r['template']} {r['period_key']}: owed {m(r['outstanding_minor'])} ({r['status']}, {r['age_days']}d)")
+
+    lines += ["", "## Data quality",
+              f"- uncategorized: {d['uncategorized_count']}, pending transfer legs: {len(d['pending_transfer_legs'])}",
+              f"- last import: {d['data_quality']['last_import'] or '(never)'}, "
+              f"last WS sync: {d['data_quality']['last_ws_sync'] or '(never)'}"]
+    return "\n".join(lines) + "\n"

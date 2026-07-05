@@ -48,3 +48,22 @@ def test_report_leaks(app_env):
     r = runner.invoke(app, ["report", "leaks", "--threshold", "20.00"])
     assert r.exit_code == 0, r.output
     assert "netflix" in r.output
+
+
+def test_goals_status(app_env):
+    runner.invoke(app, ["init"])  # example config has one goal at 100%
+    _seed(app_env["db"])
+    r = runner.invoke(app, ["goals", "status"])
+    assert r.exit_code == 0, r.output
+    assert "example-trip" in r.output
+
+
+def test_digest_json_and_markdown(app_env):
+    runner.invoke(app, ["init"])
+    _seed(app_env["db"])
+    j = runner.invoke(app, ["digest", "--format", "json"])
+    assert j.exit_code == 0, j.output
+    assert '"net_worth"' in j.output
+    md = runner.invoke(app, ["digest", "--format", "markdown"])
+    assert md.exit_code == 0, md.output
+    assert "# Finance digest" in md.output

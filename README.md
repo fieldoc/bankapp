@@ -81,6 +81,25 @@ Automation: see [`docs/scheduling.md`](docs/scheduling.md) (Windows Task Schedul
 The pipeline runs fully with **no Anthropic credentials**; if the skill never runs,
 unknowns simply wait in the queue.
 
+## Advisor layer
+
+Built on the same immutable ledger + append-only balance snapshots:
+
+```
+finance report networth [--history]     # assets - visa liability, per currency (no conversion)
+finance report savings [--months N]     # income / spend / net / savings-rate per month
+finance report subscriptions            # recurring charges, effective monthly cost, price-creep
+finance report leaks [--threshold 15.00]# small frequent spends + fees, per merchant/month
+finance budget status --month YYYY-MM    # actual vs limit, over/pace warnings
+finance goals status                     # funded (net savings since start x allocation), pace
+finance digest [--format json|markdown]  # one-shot bundle; JSON is the advisor skill's input
+```
+
+The advisor skill (`.claude/skills/advisor/SKILL.md`, subscription-billed) reads
+`finance digest --format json` and coaches toward **frugally luxurious** — surfacing
+unnoticed drains so they can fund savings goals. **It gives no investment advice** and
+is read-only apart from adding categorization rules.
+
 ## Data model (one line)
 
 `raw_txn` = immutable bank truth (UPDATE/DELETE abort via triggers). Everything else —

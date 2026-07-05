@@ -33,6 +33,8 @@ report_app = typer.Typer(help="Spend and advisor reports.")
 app.add_typer(report_app, name="report")
 budget_app = typer.Typer(help="Budget status.")
 app.add_typer(budget_app, name="budget")
+goals_app = typer.Typer(help="Savings goals.")
+app.add_typer(goals_app, name="goals")
 
 _OFX_EXTS = {".ofx", ".qfx"}
 _CSV_EXTS = {".csv"}
@@ -73,11 +75,17 @@ def init() -> None:
     seeded = classify.upsert_seed_rules(conn, cfg.transfers.seed_patterns)
     ntmpl = splits.upsert_templates(conn, cfg.templates)
     nbud = advisor.upsert_budgets(conn, cfg.budgets)
+    try:
+        ngoal = advisor.upsert_goals(conn, cfg.goals)
+    except advisor.AllocationError as exc:
+        typer.echo(f"Goal config error: {exc}")
+        raise typer.Exit(code=1)
     typer.echo(f"Initialized DB at {cfg.db_path}")
     typer.echo(f"Accounts: {len(cfg.accounts)} synced")
     typer.echo(f"Seed transfer rules: {seeded} added")
     typer.echo(f"Templates: {ntmpl} upserted")
     typer.echo(f"Budgets: {nbud} upserted")
+    typer.echo(f"Goals: {ngoal} upserted")
 
 
 @accounts_app.command("list")
@@ -511,6 +519,40 @@ def report_leaks(threshold: str = typer.Option("15.00", "--threshold", help="Dol
         typer.echo(
             f"  {r.merchant:20} {r.month}  {money.from_minor(r.total_minor, r.currency):>10} {r.currency}  (x{r.count})"
         )
+
+
+@goals_app.command("status")
+def goals_status_cmd() -> None:
+    """Per-goal funded (net savings since start x allocation), % complete, pace."""
+    from bankapp import money
+    from bankapp.report import advisor
+
+    _, conn = _load()
+    rows = advisor.goals_status(conn)
+    if not rows:
+        typer.echo("No goals configured.")
+        return
+    for g in rows:
+        typer.echo(
+            f"  {g.name:20} {money.from_minor(g.funded_minor, g.currency):>12} / "
+            f"{money.from_minor(g.target_minor, g.currency):>12} {g.currency}  "
+            f"({g.pct_complete:.0f}%, {g.pace})"
+        )
+
+
+@app.command()
+def digest(format: str = typer.Option("markdown", "--format", help="markdown | json")) -> None:
+    """One-shot advisor bundle: net worth, savings, budgets, subscriptions, leaks, goals."""
+    import json as _json
+
+    from bankapp.report import advisor
+
+    cfg, conn = _load()
+    d = advisor.digest(conn, cfg)
+    if format == "json":
+        typer.echo(_json.dumps(d, indent=2))
+    else:
+        typer.echo(advisor.render_digest_markdown(d))
 
 
 @app.command()

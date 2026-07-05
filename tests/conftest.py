@@ -66,6 +66,21 @@ institution = "wealthsimple"
 type = "cash"
 currency = "CAD"
 
+[advisor]
+leak_threshold = "15.00"
+
+[budgets]
+groceries = "600.00"
+dining = "250.00"
+subscriptions = "60.00"
+
+[[goals]]
+name = "example-trip"
+target = "3000.00"
+start_date = "2026-07-01"
+target_date = "2027-02-01"
+allocation_pct = 100
+
 [transfers]
 window_days = 7
 tolerance = "0.00"
