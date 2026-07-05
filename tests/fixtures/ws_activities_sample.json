@@ -1,0 +1,53 @@
+[
+  {
+    "canonicalId": "act-0001",
+    "accountId": "ws-acct-cash-1",
+    "type": "DIY_BUY",
+    "subType": "MARKET_ORDER",
+    "amount": "12.34",
+    "amountSign": "negative",
+    "currency": "CAD",
+    "occurredAt": "2026-01-10T18:05:00.000Z",
+    "status": "filled",
+    "spendMerchant": "",
+    "description": "Bought 1.0 x VFV"
+  },
+  {
+    "canonicalId": "act-0002",
+    "accountId": "ws-acct-cash-1",
+    "type": "DEPOSIT",
+    "subType": "E_TRANSFER",
+    "amount": "500.00",
+    "amountSign": "positive",
+    "currency": "CAD",
+    "occurredAt": "2026-01-12T15:00:00.000Z",
+    "status": "settled",
+    "eTransferName": "GRAHAM M",
+    "eTransferEmail": "g@example.com",
+    "description": "Deposit: Interac e-transfer from GRAHAM M g@example.com"
+  },
+  {
+    "canonicalId": "act-0003",
+    "accountId": "ws-acct-cash-1",
+    "type": "WITHDRAWAL",
+    "subType": "E_TRANSFER",
+    "amount": "75.00",
+    "amountSign": "negative",
+    "currency": "CAD",
+    "occurredAt": "2026-01-16T03:30:00.000Z",
+    "status": "settled",
+    "description": "Withdrawal: e-transfer"
+  },
+  {
+    "canonicalId": "act-0004",
+    "accountId": "ws-acct-cash-1",
+    "type": "DEPOSIT",
+    "subType": "E_TRANSFER",
+    "amount": "999.00",
+    "amountSign": "positive",
+    "currency": "CAD",
+    "occurredAt": "2026-01-18T15:00:00.000Z",
+    "status": "pending",
+    "description": "Deposit pending"
+  }
+]

@@ -3,11 +3,41 @@
 import sqlite3
 from pathlib import Path
 
+import keyring
+from keyring.backend import KeyringBackend
 import pytest
 
 from bankapp import db as dbmod
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+class MemoryKeyring(KeyringBackend):
+    """In-memory keyring backend for tests (no OS credential store touched)."""
+
+    priority = 1
+
+    def __init__(self):
+        super().__init__()
+        self._store: dict = {}
+
+    def get_password(self, service, username):
+        return self._store.get((service, username))
+
+    def set_password(self, service, username, password):
+        self._store[(service, username)] = password
+
+    def delete_password(self, service, username):
+        self._store.pop((service, username), None)
+
+
+@pytest.fixture
+def memkeyring():
+    kr = MemoryKeyring()
+    prev = keyring.get_keyring()
+    keyring.set_keyring(kr)
+    yield kr
+    keyring.set_keyring(prev)
 
 # A config that maps the OFX fixtures' ACCTIDs to real account keys and points db/inbox
 # at a temp dir. Used by CLI (CliRunner) tests.

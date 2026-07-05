@@ -19,6 +19,10 @@ from bankapp.ingest import core, csv_td, ofx
 app = typer.Typer(help="Local-first personal-finance pipeline.", no_args_is_help=True)
 accounts_app = typer.Typer(help="Account commands.")
 app.add_typer(accounts_app, name="accounts")
+ws_app = typer.Typer(help="Wealthsimple commands.")
+app.add_typer(ws_app, name="ws")
+sync_app = typer.Typer(help="Sync data from providers.")
+app.add_typer(sync_app, name="sync")
 
 _OFX_EXTS = {".ofx", ".qfx"}
 _CSV_EXTS = {".csv"}
@@ -137,6 +141,39 @@ def ingest(
         typer.echo(f"{f.name}: {inserted} inserted, {skipped} skipped")
 
     typer.echo(f"TOTAL: {total_ins} inserted, {total_skip} skipped, {total_quar} quarantined")
+
+
+@ws_app.command("login")
+def ws_login() -> None:
+    """Interactive Wealthsimple login (email/password/TOTP). Token -> OS keyring.
+
+    You type your own credentials into this prompt; only the resulting session token is
+    stored (in the OS keyring), never the password.
+    """
+    from bankapp.ingest import ws as wsmod
+
+    username = typer.prompt("Wealthsimple email")
+    password = typer.prompt("Password", hide_input=True)
+    otp = typer.prompt("2FA code (TOTP), blank if not prompted", default="")
+    try:
+        wsmod.authenticate(username, password, otp=otp or None)
+    except Exception as exc:  # noqa: BLE001 - surface any auth failure to the user
+        typer.echo(f"Login failed: {exc}")
+        raise typer.Exit(code=1)
+    typer.echo("WS session stored in keyring.")
+
+
+@sync_app.command("ws")
+def sync_ws_cmd() -> None:
+    """Fetch Wealthsimple activities into raw_txn. Soft-skips on any WS error."""
+    from bankapp.ingest import ws as wsmod
+
+    cfg, conn = _load()
+    sync_accounts(conn, cfg)
+    report = wsmod.sync_ws(conn, cfg)
+    for e in report.errors:
+        typer.echo(f"WARNING: {e}")
+    typer.echo(f"WS sync: {report.inserted} inserted, {report.skipped} skipped")
 
 
 if __name__ == "__main__":

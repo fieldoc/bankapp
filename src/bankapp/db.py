@@ -46,3 +46,18 @@ def init_db(path: Union[str, Path]) -> sqlite3.Connection:
     conn = connect(path)
     apply_schema(conn)
     return conn
+
+
+def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Upsert a meta key (interpretation-layer state: cursors, last-sync, last-error)."""
+    with conn:
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
+
+def get_meta(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else default
