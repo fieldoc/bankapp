@@ -29,6 +29,8 @@ review_app = typer.Typer(help="Review queue for uncategorized transactions.")
 app.add_typer(review_app, name="review")
 match_app = typer.Typer(help="Match transfers and split-expense groups.")
 app.add_typer(match_app, name="match")
+report_app = typer.Typer(help="Spend and advisor reports.")
+app.add_typer(report_app, name="report")
 
 _OFX_EXTS = {".ofx", ".qfx"}
 _CSV_EXTS = {".csv"}
@@ -356,6 +358,53 @@ def match_all_cmd(
         conn, cfg.transfers.window_days, cfg.transfers.tolerance_minor, rebuild=rebuild
     )
     typer.echo(f"splits: {ns} period(s); transfers: {nt} pair(s)")
+
+
+@report_app.command("spend")
+def report_spend(
+    month: str = typer.Option(..., "--month", help="YYYY-MM"),
+    by: Optional[str] = typer.Option(None, "--by", help="category"),
+) -> None:
+    """Spend for a month, per currency; --by category breaks it down."""
+    from bankapp import money
+    from bankapp.report import analytics
+
+    _, conn = _load()
+    rows = analytics.spend_by_category(conn, month) if by == "category" else analytics.spend_total(conn, month)
+    if not rows:
+        typer.echo(f"No spend recorded for {month}.")
+        return
+    for r in rows:
+        typer.echo(f"{r.category:20} {money.from_minor(r.spend_minor, r.currency):>12} {r.currency}")
+
+
+@app.command()
+def status() -> None:
+    """Dashboard: uncategorized, pending transfers (aged), receivables, last sync/import."""
+    from bankapp import money
+    from bankapp.report import analytics
+
+    cfg, conn = _load()
+    st = analytics.status(conn, cfg.transfers.window_days)
+    typer.echo(f"Uncategorized transactions: {st.uncategorized}")
+
+    typer.echo(f"Pending transfer legs: {len(st.pending_transfers)}")
+    for p in st.pending_transfers:
+        flag = "  [WARN: stale]" if p["warn"] else ""
+        typer.echo(f"  txn {p['id']} {money.from_minor(p['amount_minor'], 'CAD')} age={p['age_days']}d{flag}")
+
+    outstanding = [r for r in st.receivables]
+    typer.echo(f"Outstanding receivables: {len(outstanding)}")
+    for r in outstanding:
+        typer.echo(
+            f"  {r['template']} {r['period_key']} {r['status']} "
+            f"owed={money.from_minor(r['outstanding_minor'], 'CAD')} age={r['age_days']}d"
+        )
+
+    typer.echo(f"Last import:   {st.last_import or '(never)'}")
+    typer.echo(f"Last WS sync:  {st.last_ws_sync or '(never)'}")
+    if st.ws_last_error:
+        typer.echo(f"Last WS error: {st.ws_last_error}")
 
 
 @app.command()
