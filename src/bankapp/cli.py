@@ -23,6 +23,10 @@ ws_app = typer.Typer(help="Wealthsimple commands.")
 app.add_typer(ws_app, name="ws")
 sync_app = typer.Typer(help="Sync data from providers.")
 app.add_typer(sync_app, name="sync")
+rules_app = typer.Typer(help="Categorization rules.")
+app.add_typer(rules_app, name="rules")
+review_app = typer.Typer(help="Review queue for uncategorized transactions.")
+app.add_typer(review_app, name="review")
 
 _OFX_EXTS = {".ofx", ".qfx"}
 _CSV_EXTS = {".csv"}
@@ -51,12 +55,16 @@ def sync_accounts(conn: sqlite3.Connection, cfg: Config) -> None:
 
 @app.command()
 def init() -> None:
-    """Create the DB, apply schema, and sync accounts from config."""
+    """Create the DB, apply schema, sync accounts, and upsert seed transfer rules."""
+    from bankapp.classify import engine as classify
+
     cfg = configmod.load_config()
     conn = dbmod.init_db(cfg.db_path)
     sync_accounts(conn, cfg)
+    seeded = classify.upsert_seed_rules(conn, cfg.transfers.seed_patterns)
     typer.echo(f"Initialized DB at {cfg.db_path}")
     typer.echo(f"Accounts: {len(cfg.accounts)} synced")
+    typer.echo(f"Seed transfer rules: {seeded} added")
 
 
 @accounts_app.command("list")
@@ -227,6 +235,84 @@ def sync_ws_cmd() -> None:
 
 
 @app.command()
+def categorize(all: bool = typer.Option(False, "--all", help="Recompute every txn from current rules.")) -> None:
+    """Apply rules to raw_txn -> txn_interp. Idempotent; --all recomputes."""
+    from bankapp.classify import engine as classify
+
+    _, conn = _load()
+    n = classify.categorize(conn, recompute_all=all)
+    typer.echo(f"Categorized {n} transaction(s).")
+
+
+@rules_app.command("add")
+def rules_add(
+    kind: str = typer.Option("substring", "--kind", help="substring | regex"),
+    pattern: str = typer.Option(..., "--pattern"),
+    category: Optional[str] = typer.Option(None, "--category"),
+    role: Optional[str] = typer.Option(None, "--role", help="transfer|reimbursement|expense|income"),
+    counterparty: Optional[str] = typer.Option(None, "--counterparty"),
+    priority: int = typer.Option(100, "--priority"),
+    source: str = typer.Option("manual", "--source", help="manual|claude|seed"),
+) -> None:
+    """Add a categorization rule (the learn-once cache). Duplicate patterns no-op."""
+    from bankapp.classify import engine as classify
+
+    _, conn = _load()
+    try:
+        added = classify.add_rule(
+            conn, kind, pattern, category=category, role_hint=role,
+            counterparty=counterparty, priority=priority, source=source,
+        )
+    except classify.InvalidPatternError as exc:
+        typer.echo(f"Invalid rule: {exc}")
+        raise typer.Exit(code=1)
+    typer.echo("Rule added." if added else "Rule already exists (no-op).")
+
+
+@rules_app.command("list")
+def rules_list() -> None:
+    """List categorization rules in match order."""
+    from bankapp.classify import engine as classify
+
+    _, conn = _load()
+    rules = sorted(classify.load_rules(conn), key=lambda r: (r.priority, r.id))
+    if not rules:
+        typer.echo("No rules.")
+        return
+    for r in rules:
+        typer.echo(
+            f"[{r.priority:>3}] {r.match_kind:9} {r.pattern!r} -> "
+            f"category={r.category} role={r.role_hint}"
+        )
+
+
+@review_app.command("count")
+def review_count() -> None:
+    """Print the number of uncategorized transactions."""
+    from bankapp.classify import review
+
+    _, conn = _load()
+    typer.echo(str(review.count(conn)))
+
+
+@review_app.command("export")
+def review_export(
+    format: str = typer.Option("json", "--format", help="json | markdown"),
+    out: Optional[Path] = typer.Option(None, "--out", help="Write to a file instead of stdout."),
+) -> None:
+    """Export the review queue for the Claude categorize skill."""
+    from bankapp.classify import review
+
+    _, conn = _load()
+    text = review.export_markdown(conn) if format == "markdown" else review.export_json(conn)
+    if out:
+        Path(out).expanduser().write_text(text, encoding="utf-8")
+        typer.echo(f"Wrote {out}")
+    else:
+        typer.echo(text)
+
+
+@app.command()
 def refresh() -> None:
     """One-shot pipeline: sync WS -> ingest inbox -> (categorize -> match -> snapshot).
 
@@ -250,7 +336,13 @@ def refresh() -> None:
         typer.echo(f"WARNING: inbox: {m}")
     typer.echo(f"inbox: {ins} inserted, {skip} skipped, {quar} quarantined")
 
-    # 3+. categorize / match all / snapshot balances wired in later phases.
+    # 3. Categorize new transactions (rules-first, idempotent).
+    from bankapp.classify import engine as classify
+
+    n = classify.categorize(conn)
+    typer.echo(f"categorized: {n}")
+
+    # 4+. match all / snapshot balances wired in later phases.
     typer.echo("refresh complete")
 
 
