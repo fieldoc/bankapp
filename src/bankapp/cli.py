@@ -121,6 +121,24 @@ def _infer_csv_account(cfg: Config, filename: str) -> Optional[str]:
     return None
 
 
+def _capture_ofx_balances(cfg, conn, f: Path, acctid_to_key: dict) -> None:
+    """Snapshot <LEDGERBAL> from an OFX file (liabilities normalized negative)."""
+    from bankapp.report import advisor
+
+    type_by_key = {a.key: a.type for a in cfg.accounts}
+    id_by_key = {r["key"]: r["id"] for r in conn.execute("SELECT id, key FROM accounts")}
+    try:
+        balances = ofx.ofx_ledger_balances(f, acctid_to_key)
+    except ofx.MalformedOFXError:
+        return
+    for b in balances:
+        aid = id_by_key.get(b.account_key)
+        if aid is None:
+            continue
+        minor = advisor.normalize_balance_for_type(b.balance_minor, type_by_key.get(b.account_key, ""))
+        advisor.snapshot_balance(conn, aid, b.as_of, minor, b.currency, "ofx")
+
+
 def _file_to_txns(cfg, conn, f: Path, account: Optional[str], acctid_to_key: dict) -> tuple[list, bool]:
     """Parse one file into txns. Returns (txns, quarantined). May raise
     ofx.UnmappedAccountError, _CsvNeedsAccount, or leave unsupported files as ([], False)."""
@@ -170,6 +188,8 @@ def ingest(
 
         inserted, skipped = core.insert_batch(conn, txns)
         core.record_import(conn, f.name, core.file_sha256(f), inserted, skipped)
+        if f.suffix.lower() in _OFX_EXTS:
+            _capture_ofx_balances(cfg, conn, f, acctid_to_key)
         total_ins += inserted
         total_skip += skipped
         typer.echo(f"{f.name}: {inserted} inserted, {skipped} skipped")
@@ -203,6 +223,8 @@ def _ingest_inbox(cfg, conn) -> tuple[int, int, int, list[str]]:
             continue
         i, s = core.insert_batch(conn, txns)
         core.record_import(conn, f.name, core.file_sha256(f), i, s)
+        if f.suffix.lower() in _OFX_EXTS:
+            _capture_ofx_balances(cfg, conn, f, acctid_to_key)
         ins += i
         skip += s
     return (ins, skip, quar, msgs)
@@ -376,6 +398,31 @@ def report_spend(
         return
     for r in rows:
         typer.echo(f"{r.category:20} {money.from_minor(r.spend_minor, r.currency):>12} {r.currency}")
+
+
+@report_app.command("networth")
+def report_networth(
+    history: bool = typer.Option(False, "--history", help="Month-end series per currency."),
+) -> None:
+    """Net worth = latest snapshot per account, summed per currency (no conversion)."""
+    from bankapp import money
+    from bankapp.report import advisor
+
+    _, conn = _load()
+    if history:
+        rows = advisor.net_worth_history(conn)
+        if not rows:
+            typer.echo("No balance snapshots yet.")
+            return
+        for r in rows:
+            typer.echo(f"{r['month']} {money.from_minor(r['net_worth_minor'], r['currency']):>14} {r['currency']}")
+        return
+    rows = advisor.net_worth(conn)
+    if not rows:
+        typer.echo("No balance snapshots yet. Sync or ingest an OFX with a ledger balance.")
+        return
+    for r in rows:
+        typer.echo(f"{money.from_minor(r.net_worth_minor, r.currency):>14} {r.currency}  (as of {r.freshest_as_of})")
 
 
 @app.command()

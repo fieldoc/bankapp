@@ -138,6 +138,22 @@ def test_sync_ws_records_external_id(synced_db):
     assert ext == "ws-acct-cash-1"
 
 
+def test_sync_ws_captures_balance_snapshot(synced_db):
+    cfg, conn = synced_db
+    ws_accounts = [{"id": "ws-acct-cash-1", "unifiedAccountType": "CASH"}]
+
+    class ClientWithBalances(_FakeClient):
+        def get_account_balances(self, ws_id):
+            return {"sec-c-cad": "1234.56"}
+
+    ws.sync_ws(conn, cfg, client=ClientWithBalances(ws_accounts, {"ws-acct-cash-1": []}))
+    row = conn.execute(
+        "SELECT balance_minor, source FROM balance_snapshot"
+    ).fetchone()
+    assert row["balance_minor"] == 123456
+    assert row["source"] == "ws"
+
+
 def test_sync_ws_api_error_soft_skips(synced_db):
     cfg, conn = synced_db
 

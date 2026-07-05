@@ -174,6 +174,37 @@ def resolve_ws_account_map(conn, cfg, ws_accounts: list[dict]) -> dict[str, str]
     return mapping
 
 
+def _capture_ws_balances(conn, cfg, client, id_to_key: dict[str, str]) -> None:
+    """Best-effort: snapshot each WS account's CAD cash balance. Degrades silently —
+    exact investment market-value fields are confirmed at the real smoke test."""
+    from datetime import date as _date
+    from decimal import Decimal
+
+    from bankapp.report import advisor
+
+    getb = getattr(client, "get_account_balances", None)
+    if getb is None:
+        return
+    type_by_key = {a.key: a.type for a in cfg.accounts}
+    curr_by_key = {a.key: a.currency for a in cfg.accounts}
+    id_by_key = {r["key"]: r["id"] for r in conn.execute("SELECT id, key FROM accounts")}
+    as_of = _date.today().isoformat()
+    for ws_id, key in id_to_key.items():
+        try:
+            balances = getb(ws_id)  # {security: quantity}; cash under 'sec-c-cad'/'sec-c-usd'
+            cash = balances.get("sec-c-cad") if isinstance(balances, dict) else None
+            if cash is None:
+                continue
+            currency = curr_by_key.get(key, "CAD")
+            minor = money.to_minor(Decimal(str(cash)), currency)
+            minor = advisor.normalize_balance_for_type(minor, type_by_key.get(key, ""))
+            aid = id_by_key.get(key)
+            if aid is not None:
+                advisor.snapshot_balance(conn, aid, as_of, minor, currency, "ws")
+        except Exception:
+            continue
+
+
 def sync_ws(conn, cfg, client=None, api_factory=None, how_many: int = 200) -> SyncReport:
     """Fetch WS activities and ingest them. Any API error -> report.errors (scheduler-safe)."""
     from bankapp import db as dbmod
@@ -189,6 +220,8 @@ def sync_ws(conn, cfg, client=None, api_factory=None, how_many: int = 200) -> Sy
             report.errors.append("no WS accounts matched config")
             dbmod.set_meta(conn, "ws_last_error", report.errors[-1])
             return report
+
+        _capture_ws_balances(conn, cfg, client, id_to_key)
 
         txns: list[NormalizedTxn] = []
         for ws_id, key in id_to_key.items():

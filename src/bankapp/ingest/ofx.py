@@ -41,6 +41,14 @@ class OFXIngestResult:
     quarantine_path: Optional[Path] = None
 
 
+@dataclass(frozen=True)
+class OFXBalance:
+    account_key: str
+    as_of: str          # 'YYYY-MM-DD'
+    balance_minor: int  # signed as reported (normalize liabilities at the caller)
+    currency: str
+
+
 def acctid_map(accounts: Iterable[AccountConfig]) -> dict[str, str]:
     """Build {ofx_acctid: account_key} from configured accounts."""
     return {a.ofx_acctid: a.key for a in accounts if a.ofx_acctid}
@@ -88,6 +96,28 @@ def ofx_to_txns(path: Union[str, Path], acctid_to_key: dict[str, str]) -> list[N
                     source="ofx",
                 )
             )
+    return out
+
+
+def ofx_ledger_balances(path: Union[str, Path], acctid_to_key: dict[str, str]) -> list[OFXBalance]:
+    """Extract <LEDGERBAL> per statement. Raises MalformedOFXError on parse failure;
+    silently skips statements with no ledger balance or unmapped ACCTID."""
+    ofx = _parse(path)
+    out: list[OFXBalance] = []
+    for st in ofx.statements:
+        key = acctid_to_key.get(str(st.account.acctid))
+        led = getattr(st, "ledgerbal", None)
+        if key is None or led is None:
+            continue
+        currency = getattr(st, "curdef", None) or "CAD"
+        out.append(
+            OFXBalance(
+                account_key=key,
+                as_of=led.dtasof.strftime("%Y-%m-%d"),
+                balance_minor=money.to_minor(led.balamt, currency),
+                currency=currency,
+            )
+        )
     return out
 
 
