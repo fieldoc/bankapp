@@ -31,6 +31,8 @@ match_app = typer.Typer(help="Match transfers and split-expense groups.")
 app.add_typer(match_app, name="match")
 report_app = typer.Typer(help="Spend and advisor reports.")
 app.add_typer(report_app, name="report")
+budget_app = typer.Typer(help="Budget status.")
+app.add_typer(budget_app, name="budget")
 
 _OFX_EXTS = {".ofx", ".qfx"}
 _CSV_EXTS = {".csv"}
@@ -66,12 +68,16 @@ def init() -> None:
     cfg = configmod.load_config()
     conn = dbmod.init_db(cfg.db_path)
     sync_accounts(conn, cfg)
+    from bankapp.report import advisor
+
     seeded = classify.upsert_seed_rules(conn, cfg.transfers.seed_patterns)
     ntmpl = splits.upsert_templates(conn, cfg.templates)
+    nbud = advisor.upsert_budgets(conn, cfg.budgets)
     typer.echo(f"Initialized DB at {cfg.db_path}")
     typer.echo(f"Accounts: {len(cfg.accounts)} synced")
     typer.echo(f"Seed transfer rules: {seeded} added")
     typer.echo(f"Templates: {ntmpl} upserted")
+    typer.echo(f"Budgets: {nbud} upserted")
 
 
 @accounts_app.command("list")
@@ -423,6 +429,88 @@ def report_networth(
         return
     for r in rows:
         typer.echo(f"{money.from_minor(r.net_worth_minor, r.currency):>14} {r.currency}  (as of {r.freshest_as_of})")
+
+
+@report_app.command("savings")
+def report_savings(months: Optional[int] = typer.Option(None, "--months", help="Last N months.")) -> None:
+    """Income / spend / net / savings-rate per month, with a trend arrow."""
+    from bankapp import money
+    from bankapp.report import advisor
+
+    _, conn = _load()
+    rows = advisor.monthly_cashflow(conn, months=months)
+    if not rows:
+        typer.echo("No cashflow yet.")
+        return
+    prev = None
+    for r in rows:
+        arrow = "=" if prev is None or r.net_minor == prev else ("+" if r.net_minor > prev else "-")
+        typer.echo(
+            f"{r.month} {r.currency}  income={money.from_minor(r.income_minor, r.currency):>10}  "
+            f"spend={money.from_minor(r.spend_minor, r.currency):>10}  "
+            f"net={money.from_minor(r.net_minor, r.currency):>10}  "
+            f"rate={r.savings_rate * 100:5.1f}%  {arrow}"
+        )
+        prev = r.net_minor
+
+
+@budget_app.command("status")
+def budget_status_cmd(month: str = typer.Option(..., "--month", help="YYYY-MM")) -> None:
+    """Per-category actual vs limit for a month, with over/pace warnings."""
+    from bankapp import money
+    from bankapp.report import advisor
+
+    _, conn = _load()
+    rows = advisor.budget_status(conn, month)
+    if not rows:
+        typer.echo("No budgets configured or no spend this month.")
+        return
+    for r in rows:
+        if r.limit_minor is None:
+            typer.echo(f"  {r.category:20} {money.from_minor(r.actual_minor, 'CAD'):>10}  (unbudgeted)")
+            continue
+        flag = "  [OVER]" if r.over else ("  [pace]" if r.pace_warn else "")
+        typer.echo(
+            f"  {r.category:20} {money.from_minor(r.actual_minor, 'CAD'):>10} / "
+            f"{money.from_minor(r.limit_minor, 'CAD'):>10}{flag}"
+        )
+
+
+@report_app.command("subscriptions")
+def report_subscriptions() -> None:
+    """Recurring charges: cadence, effective monthly cost, price-creep flags."""
+    from bankapp import money
+    from bankapp.report import advisor
+
+    _, conn = _load()
+    subs = advisor.subscriptions_from_db(conn)
+    if not subs:
+        typer.echo("No recurring charges detected.")
+        return
+    for s in subs:
+        creep = "  [price up]" if s.price_creep else ""
+        typer.echo(
+            f"  {s.merchant:20} {s.cadence:8} ~{money.from_minor(s.monthly_cost_minor, s.currency)}/mo "
+            f"{s.currency}  (x{s.count}, last {s.last_charge}){creep}"
+        )
+
+
+@report_app.command("leaks")
+def report_leaks(threshold: str = typer.Option("15.00", "--threshold", help="Dollar threshold.")) -> None:
+    """Small frequent spends + fees, aggregated per merchant/month."""
+    from bankapp import money
+    from bankapp.report import advisor
+
+    cfg, conn = _load()
+    thr = money.to_minor(threshold, "CAD") if threshold else cfg.leak_threshold_minor
+    rows = advisor.leaks_from_db(conn, thr)
+    if not rows:
+        typer.echo("No leaks detected.")
+        return
+    for r in rows:
+        typer.echo(
+            f"  {r.merchant:20} {r.month}  {money.from_minor(r.total_minor, r.currency):>10} {r.currency}  (x{r.count})"
+        )
 
 
 @app.command()
