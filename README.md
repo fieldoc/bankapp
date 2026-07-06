@@ -57,6 +57,9 @@ finance accounts list
 finance ingest <path>... [--account KEY]   # .ofx/.qfx auto-map by ACCTID; .csv needs --account
 finance ws login                   # interactive TOTP; session token -> OS keyring
 finance sync ws                    # fetch Wealthsimple activities
+finance plaid keys                 # store Plaid Client ID + secret in OS keyring
+finance plaid link                 # one-time: connect TD via Plaid Link (browser)
+finance sync plaid                 # cursor-based /transactions/sync for TD
 finance categorize [--all]         # rules-first; idempotent
 finance rules add --kind substring --pattern netflix --category subscriptions
 finance rules list

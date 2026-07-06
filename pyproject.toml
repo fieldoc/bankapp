@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "ws-api==0.35.0",
     "ofxtools==1.1.1",
+    "plaid-python==40.1.0",
     "keyring",
     "typer",
     "tomli; python_version<\"3.11\"",

@@ -21,6 +21,8 @@ accounts_app = typer.Typer(help="Account commands.")
 app.add_typer(accounts_app, name="accounts")
 ws_app = typer.Typer(help="Wealthsimple commands.")
 app.add_typer(ws_app, name="ws")
+plaid_app = typer.Typer(help="Plaid (TD) commands.")
+app.add_typer(plaid_app, name="plaid")
 sync_app = typer.Typer(help="Sync data from providers.")
 app.add_typer(sync_app, name="sync")
 rules_app = typer.Typer(help="Categorization rules.")
@@ -262,6 +264,61 @@ def ws_login() -> None:
         typer.echo(f"Login failed: {exc}")
         raise typer.Exit(code=1)
     typer.echo("WS session stored in keyring.")
+
+
+@plaid_app.command("keys")
+def plaid_keys() -> None:
+    """Store your Plaid Client ID + Production secret in the OS keyring.
+
+    You paste your own keys into this prompt; they go straight to the keyring (encrypted,
+    local-only) and never touch the repo or me.
+    """
+    from bankapp.ingest import plaid_td
+
+    client_id = typer.prompt("Plaid Client ID")
+    secret = typer.prompt("Plaid Production secret", hide_input=True)
+    plaid_td.store_credentials(client_id.strip(), secret.strip())
+    typer.echo("Plaid credentials stored in keyring.")
+
+
+@plaid_app.command("link")
+def plaid_link() -> None:
+    """One-time: open Plaid Link in your browser to connect TD. Token -> keyring.
+
+    You sign in to TD inside Plaid's secure window; I never see those credentials.
+    """
+    from bankapp.ingest import plaid_td
+
+    cfg, conn = _load()
+    sync_accounts(conn, cfg)
+    try:
+        mapping = plaid_td.run_link_flow(conn, cfg)
+    except plaid_td.PlaidCredsError as exc:
+        typer.echo(f"{exc}")
+        raise typer.Exit(code=1)
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"Link failed: {exc}")
+        raise typer.Exit(code=1)
+    if not mapping:
+        typer.echo("Linked, but no TD chequing/Visa accounts matched your config keys.")
+    else:
+        typer.echo("Linked TD. Account mapping:")
+        for acct_id, key in mapping.items():
+            typer.echo(f"  {key}  <-  {acct_id[:6]}...")
+    typer.echo("Run `finance sync plaid` to pull transactions.")
+
+
+@sync_app.command("plaid")
+def sync_plaid_cmd() -> None:
+    """Fetch TD transactions via Plaid /transactions/sync. Soft-skips on any error."""
+    from bankapp.ingest import plaid_td
+
+    cfg, conn = _load()
+    sync_accounts(conn, cfg)
+    report = plaid_td.sync_plaid(conn, cfg)
+    for e in report.errors:
+        typer.echo(f"WARNING: {e}")
+    typer.echo(f"Plaid sync: {report.inserted} inserted, {report.skipped} skipped")
 
 
 @sync_app.command("ws")
@@ -582,6 +639,11 @@ def status() -> None:
     typer.echo(f"Last WS sync:  {st.last_ws_sync or '(never)'}")
     if st.ws_last_error:
         typer.echo(f"Last WS error: {st.ws_last_error}")
+    plaid_sync = dbmod.get_meta(conn, "plaid_last_sync")
+    plaid_err = dbmod.get_meta(conn, "plaid_last_error")
+    typer.echo(f"Last Plaid sync: {plaid_sync or '(never)'}")
+    if plaid_err:
+        typer.echo(f"Last Plaid error: {plaid_err}")
 
 
 @app.command()
@@ -595,6 +657,15 @@ def refresh() -> None:
 
     cfg, conn = _load()
     sync_accounts(conn, cfg)
+
+    # 0. Plaid TD (only if enabled; soft-skip on any error)
+    if cfg.plaid.enabled:
+        from bankapp.ingest import plaid_td
+
+        p_report = plaid_td.sync_plaid(conn, cfg)
+        for e in p_report.errors:
+            typer.echo(f"WARNING: plaid: {e}")
+        typer.echo(f"plaid: {p_report.inserted} inserted, {p_report.skipped} skipped")
 
     # 1. Wealthsimple (soft-skip if no token / API down)
     ws_report = wsmod.sync_ws(conn, cfg)

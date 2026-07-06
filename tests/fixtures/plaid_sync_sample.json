@@ -1,0 +1,39 @@
+[
+  {
+    "transaction_id": "txn-0001",
+    "account_id": "acc-chq",
+    "date": "2026-01-10",
+    "amount": 12.34,
+    "iso_currency_code": "CAD",
+    "pending": false,
+    "merchant_name": "Shoppers Drug Mart",
+    "name": "SHOPPERS DRUG MART #123"
+  },
+  {
+    "transaction_id": "txn-0002",
+    "account_id": "acc-chq",
+    "date": "2026-01-12",
+    "amount": -500.00,
+    "iso_currency_code": "CAD",
+    "pending": false,
+    "merchant_name": null,
+    "name": "PAYROLL DEPOSIT"
+  },
+  {
+    "transaction_id": "txn-0003",
+    "account_id": "acc-chq",
+    "date": "2026-01-13",
+    "amount": 4.50,
+    "iso_currency_code": "CAD",
+    "pending": true,
+    "merchant_name": "Tim Hortons",
+    "name": "TIM HORTONS"
+  },
+  {
+    "account_id": "acc-chq",
+    "date": "2026-01-14",
+    "amount": 9.99,
+    "pending": false,
+    "name": "MISSING TRANSACTION ID"
+  }
+]
