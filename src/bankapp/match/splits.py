@@ -216,14 +216,18 @@ def _find_ungrouped_amount(conn, acct_id: int, target_minor: int, tol: int, lo: 
     return cands[0]
 
 
-def _attach_transfer_legs(conn, tmpl, exp_acct_id, reimb_acct_id, gid, expected_date) -> None:
+def _attach_transfer_legs(conn, tmpl, exp_acct_id, reimb_acct_ids, gid, expected_date) -> None:
     if conn.execute(
         "SELECT 1 FROM group_members WHERE group_id = ? AND role IN ('transfer_out','transfer_in')", (gid,)
     ).fetchone():
         return
     lo, hi = _window_bounds(expected_date, tmpl)
     tol = tmpl.amount_tolerance_minor
-    out = _find_ungrouped_amount(conn, reimb_acct_id, tmpl.expected_amount_minor, tol, lo, hi, sign=-1)
+    out = None
+    for acct in reimb_acct_ids:  # funding leg may come from any watched account
+        out = _find_ungrouped_amount(conn, acct, tmpl.expected_amount_minor, tol, lo, hi, sign=-1)
+        if out is not None:
+            break
     inn = _find_ungrouped_amount(conn, exp_acct_id, tmpl.expected_amount_minor, tol, lo, hi, sign=1)
     if out is None or inn is None:
         return  # incomplete pair -> leave for the generic transfer matcher
@@ -256,15 +260,21 @@ def _group_expected_and_received(conn, gid: int) -> tuple[Optional[int], int, Op
     return (expected, received, exp["posted_date"])
 
 
-def _match_reimbursements(conn, tmpl: Template, reimb_acct_id: int) -> None:
+def _match_reimbursements(conn, tmpl: Template, reimb_acct_ids: list[int]) -> None:
     """FIFO-allocate ungrouped reimbursement inflows to the oldest unsettled period."""
     pat = _compile(tmpl.reimburser_pattern)
+    marks = ",".join("?" * len(reimb_acct_ids))
+    # role_hint='transfer' = my own money moving between my accounts — never a
+    # reimbursement, even when it matches the pattern and clears the amount gate
+    # (WS keeps sender names, so self e-transfers DO match a broad 'e-transfer').
     rows = conn.execute(
-        """SELECT r.id, r.posted_date, r.amount_minor, r.description_norm
+        f"""SELECT r.id, r.posted_date, r.amount_minor, r.description_norm
            FROM raw_txn r LEFT JOIN group_members gm ON gm.raw_txn_id = r.id
-           WHERE r.account_id = ? AND r.amount_minor > 0 AND gm.raw_txn_id IS NULL
+           LEFT JOIN txn_interp i ON i.raw_txn_id = r.id
+           WHERE r.account_id IN ({marks}) AND r.amount_minor > 0 AND gm.raw_txn_id IS NULL
+             AND i.role_hint IS NOT 'transfer'
            ORDER BY r.posted_date, r.id""",
-        (reimb_acct_id,),
+        reimb_acct_ids,
     ).fetchall()
     candidates = [
         r for r in rows
@@ -358,13 +368,20 @@ def match_splits(conn: sqlite3.Connection, today: Optional[date] = None) -> int:
 
 def _process_template(conn, tmpl: Template, acct_ids, today: date, now: str) -> int:
     exp_acct_id = acct_ids.get(tmpl.expense_account)
-    reimb_acct_id = acct_ids.get(tmpl.reimburse_account)
-    if exp_acct_id is None or reimb_acct_id is None:
+    # reimburse_account is one key or CSV of keys (payments may arrive in several)
+    reimb_acct_ids = [
+        acct_ids[k.strip()]
+        for k in tmpl.reimburse_account.split(",")
+        if k.strip() in acct_ids
+    ]
+    if exp_acct_id is None or not reimb_acct_ids:
         return 0
 
+    anchor_ids = [exp_acct_id, *reimb_acct_ids]
+    marks = ",".join("?" * len(anchor_ids))
     row = conn.execute(
-        "SELECT MIN(posted_date) AS m FROM raw_txn WHERE account_id IN (?,?)",
-        (exp_acct_id, reimb_acct_id),
+        f"SELECT MIN(posted_date) AS m FROM raw_txn WHERE account_id IN ({marks})",
+        anchor_ids,
     ).fetchone()
     if not row or row["m"] is None:
         return 0
@@ -386,9 +403,9 @@ def _process_template(conn, tmpl: Template, acct_ids, today: date, now: str) -> 
         gid = _ensure_group(conn, tmpl.id, pk, now)
         _attach_expense(conn, tmpl, exp_acct_id, gid, pk)
         if tmpl.link_transfer:
-            _attach_transfer_legs(conn, tmpl, exp_acct_id, reimb_acct_id, gid, expected_date)
+            _attach_transfer_legs(conn, tmpl, exp_acct_id, reimb_acct_ids, gid, expected_date)
 
-    _match_reimbursements(conn, tmpl, reimb_acct_id)
+    _match_reimbursements(conn, tmpl, reimb_acct_ids)
 
     for pk, expected_date in periods:
         gid = conn.execute(

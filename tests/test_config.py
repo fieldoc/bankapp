@@ -90,3 +90,25 @@ def test_missing_file_actionable_error(tmp_path):
     msg = str(ei.value)
     assert str(missing) in msg
     assert "config.example.toml" in msg
+
+
+def test_template_reimburse_account_accepts_list():
+    from bankapp.config import _parse_template
+
+    t = _parse_template({
+        "name": "rent", "kind": "split_expense", "expected_amount": "2199.00",
+        "share": "1/2", "expense_account": "ws-cash", "expense_pattern": "uncle pete",
+        "reimburse_account": ["td-chequing", "ws-cash"], "reimburser_pattern": "e-transfer",
+    })
+    assert t.reimburse_account == "td-chequing,ws-cash"
+
+
+def test_template_reimburse_account_string_still_works():
+    from bankapp.config import _parse_template
+
+    t = _parse_template({
+        "name": "rent", "kind": "split_expense", "expected_amount": "2199.00",
+        "share": "1/2", "expense_account": "ws-cash", "expense_pattern": "uncle pete",
+        "reimburse_account": "td-chequing", "reimburser_pattern": "e-transfer",
+    })
+    assert t.reimburse_account == "td-chequing"
