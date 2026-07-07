@@ -448,7 +448,9 @@ def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
         "receivables": [
             dict(r) for r in conn.execute(
                 """SELECT template, period_key, status, outstanding_minor, age_days
-                   FROM v_receivables WHERE outstanding_minor > 0 ORDER BY age_days DESC"""
+                   FROM v_receivables
+                   WHERE outstanding_minor > 0 AND status != 'settled'
+                   ORDER BY age_days DESC"""
             )
         ],
         "goals": [
