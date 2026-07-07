@@ -67,6 +67,23 @@ def net_worth(conn: sqlite3.Connection) -> list[NetWorthRow]:
     ]
 
 
+def net_worth_split(conn: sqlite3.Connection) -> list[dict]:
+    """Per currency: accessible vs locked (accounts.locked=1) net worth, from the
+    latest snapshot per account. Locked money counts toward the total but is reported
+    separately — acknowledged, not spendable."""
+    rows = conn.execute(
+        """SELECT b.currency,
+                  SUM(CASE WHEN a.locked = 0 THEN b.balance_minor ELSE 0 END) AS accessible_minor,
+                  SUM(CASE WHEN a.locked = 1 THEN b.balance_minor ELSE 0 END) AS locked_minor
+           FROM balance_snapshot b
+           JOIN accounts a ON a.id = b.account_id
+           JOIN (SELECT account_id, MAX(as_of) AS as_of FROM balance_snapshot GROUP BY account_id) latest
+             ON latest.account_id = b.account_id AND latest.as_of = b.as_of
+           GROUP BY b.currency ORDER BY b.currency"""
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def net_worth_history(conn: sqlite3.Connection) -> list[dict]:
     """Month-end net worth series per currency from the snapshot history.
 
@@ -424,6 +441,7 @@ def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
             {"currency": r.currency, "net_worth_minor": r.net_worth_minor, "freshest_as_of": r.freshest_as_of}
             for r in net_worth(conn)
         ],
+        "net_worth_split": net_worth_split(conn),  # accessible vs locked per currency
         "net_worth_delta_minor": nw_delta,
         "savings": [
             {"month": r.month, "currency": r.currency, "income_minor": r.income_minor,

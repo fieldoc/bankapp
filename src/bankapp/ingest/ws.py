@@ -170,27 +170,47 @@ def resolve_ws_account_map(conn, cfg, ws_accounts: list[dict]) -> dict[str, str]
     used: set[str] = set()
     mapping: dict[str, str] = {}
 
-    # Pass 1: exact type matches only. This must win — a greedy fallback here once let
-    # an investing account claim the 'ws-cash' slot and silently skip the real Cash
-    # account (whose activity was the whole point).
-    unmatched: list[dict] = []
+    # Pass 0: explicit ws_account_type hints win (substring vs unifiedAccountType) —
+    # the only way to tell two same-local-type accounts apart (e.g. TFSA vs non-reg).
+    remaining: list[dict] = []
     for wsa in ws_accounts:
         ws_id = wsa.get("id")
         if ws_id is None:
             continue
-        want = _ws_type_for(wsa.get("unifiedAccountType", ""))
-        match = next((a for a in ws_cfg if a.key not in used and want is not None and a.type == want), None)
+        unified = (wsa.get("unifiedAccountType") or "").upper()
+        match = next(
+            (a for a in ws_cfg if a.key not in used and a.ws_account_type
+             and a.ws_account_type.upper() in unified),
+            None,
+        )
         if match is None:
-            unmatched.append(wsa)
+            remaining.append(wsa)
             continue
         used.add(match.key)
         mapping[ws_id] = match.key
 
-    # Pass 2: only WS accounts of UNKNOWN type may take a leftover config slot.
+    # Pass 1: exact type matches (hint-less config slots only). This must win over any
+    # fallback — a greedy fallback here once let an investing account claim the
+    # 'ws-cash' slot and silently skip the real Cash account.
+    unmatched: list[dict] = []
+    for wsa in remaining:
+        want = _ws_type_for(wsa.get("unifiedAccountType", ""))
+        match = next(
+            (a for a in ws_cfg if a.key not in used and a.ws_account_type is None
+             and want is not None and a.type == want),
+            None,
+        )
+        if match is None:
+            unmatched.append(wsa)
+            continue
+        used.add(match.key)
+        mapping[wsa["id"]] = match.key
+
+    # Pass 2: only WS accounts of UNKNOWN type may take a leftover hint-less slot.
     for wsa in unmatched:
         if _ws_type_for(wsa.get("unifiedAccountType", "")) is not None:
             continue  # known type with no matching config slot -> skip, don't hijack
-        match = next((a for a in ws_cfg if a.key not in used), None)
+        match = next((a for a in ws_cfg if a.key not in used and a.ws_account_type is None), None)
         if match is None:
             continue
         used.add(match.key)
@@ -202,29 +222,60 @@ def resolve_ws_account_map(conn, cfg, ws_accounts: list[dict]) -> dict[str, str]
     return mapping
 
 
-def _capture_ws_balances(conn, cfg, client, id_to_key: dict[str, str]) -> None:
-    """Best-effort: snapshot each WS account's CAD cash balance. Degrades silently —
-    exact investment market-value fields are confirmed at the real smoke test."""
+def _net_liquidation_minor(wsa: dict) -> Optional[tuple[int, str]]:
+    """(minor_units, currency) from the account dict's netLiquidationValue, or None.
+
+    get_accounts (FetchAllAccountFinancials) includes
+    financials.currentCombined.netLiquidationValue = {amount, cents, currency} — the
+    full market value of the account (holdings included), which is what net worth
+    wants for investment accounts. `cents` is minor units directly.
+    """
+    from decimal import Decimal
+
+    try:
+        nlv = wsa["financials"]["currentCombined"]["netLiquidationValue"]
+        currency = nlv.get("currency") or "CAD"
+        if nlv.get("cents") is not None:
+            return (int(nlv["cents"]), currency)
+        if nlv.get("amount") is not None:
+            return (money.to_minor(Decimal(str(nlv["amount"])), currency), currency)
+    except (KeyError, TypeError, ValueError):
+        pass
+    return None
+
+
+def _capture_ws_balances(conn, cfg, client, id_to_key: dict[str, str], ws_accounts=None) -> None:
+    """Best-effort balance snapshots. Prefers netLiquidationValue from the accounts
+    payload (true market value, no extra API calls); falls back to the CAD cash
+    balance. Degrades silently."""
     from datetime import date as _date
     from decimal import Decimal
 
     from bankapp.report import advisor
 
-    getb = getattr(client, "get_account_balances", None)
-    if getb is None:
-        return
     type_by_key = {a.key: a.type for a in cfg.accounts}
     curr_by_key = {a.key: a.currency for a in cfg.accounts}
     id_by_key = {r["key"]: r["id"] for r in conn.execute("SELECT id, key FROM accounts")}
     as_of = _date.today().isoformat()
+    nlv_by_id = {
+        wsa.get("id"): _net_liquidation_minor(wsa) for wsa in (ws_accounts or [])
+    }
+    getb = getattr(client, "get_account_balances", None)
+
     for ws_id, key in id_to_key.items():
         try:
-            balances = getb(ws_id)  # {security: quantity}; cash under 'sec-c-cad'/'sec-c-usd'
-            cash = balances.get("sec-c-cad") if isinstance(balances, dict) else None
-            if cash is None:
-                continue
-            currency = curr_by_key.get(key, "CAD")
-            minor = money.to_minor(Decimal(str(cash)), currency)
+            found = nlv_by_id.get(ws_id)
+            if found is not None:
+                minor, currency = found
+            else:
+                if getb is None:
+                    continue
+                balances = getb(ws_id)  # {security: quantity}; cash under 'sec-c-cad'
+                cash = balances.get("sec-c-cad") if isinstance(balances, dict) else None
+                if cash is None:
+                    continue
+                currency = curr_by_key.get(key, "CAD")
+                minor = money.to_minor(Decimal(str(cash)), currency)
             minor = advisor.normalize_balance_for_type(minor, type_by_key.get(key, ""))
             aid = id_by_key.get(key)
             if aid is not None:
@@ -249,10 +300,13 @@ def sync_ws(conn, cfg, client=None, api_factory=None, how_many: int = 200) -> Sy
             dbmod.set_meta(conn, "ws_last_error", report.errors[-1])
             return report
 
-        _capture_ws_balances(conn, cfg, client, id_to_key)
+        _capture_ws_balances(conn, cfg, client, id_to_key, ws_accounts=ws_accounts)
 
+        locked_keys = {a.key for a in cfg.accounts if a.locked}
         txns: list[NormalizedTxn] = []
         for ws_id, key in id_to_key.items():
+            if key in locked_keys:
+                continue  # balance-only: locked money is acknowledged, never ingested
             activities = client.get_activities(ws_id, how_many=how_many)
             for act in activities:
                 mapped = map_activity(act, key, cfg.timezone)

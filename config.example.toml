@@ -29,6 +29,15 @@ institution = "wealthsimple"
 type = "cash"
 currency = "CAD"
 
+[[accounts]]                           # example: a locked TFSA — counted in net worth,
+key = "ws-tfsa"                        # transactions never ingested, reported separately
+institution = "wealthsimple"
+type = "investment"
+currency = "CAD"
+locked = true                          # acknowledged, not accessible
+ws_account_type = "TFSA"               # disambiguates same-type WS accounts (substring
+                                       # of WS unifiedAccountType, e.g. NON_REGISTERED)
+
 [plaid]
 enabled     = false                    # flip on after the TP.0 spike succeeds
 environment = "production"

@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS accounts (
   institution TEXT NOT NULL,            -- 'td' | 'wealthsimple'
   type TEXT NOT NULL CHECK (type IN ('chequing','savings','visa','cash','investment','crypto')),
   currency TEXT NOT NULL DEFAULT 'CAD',
-  external_id TEXT                      -- OFX ACCTID or WS account id
+  external_id TEXT,                     -- OFX ACCTID or WS account id
+  locked INTEGER NOT NULL DEFAULT 0     -- counted in net worth, but not accessible (e.g. TFSA)
 );
 
 CREATE TABLE IF NOT EXISTS raw_txn (

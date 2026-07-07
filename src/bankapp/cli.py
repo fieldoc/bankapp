@@ -57,9 +57,10 @@ def sync_accounts(conn: sqlite3.Connection, cfg: Config) -> None:
     """Upsert accounts from config (idempotent; INSERT OR IGNORE by key)."""
     for a in cfg.accounts:
         conn.execute(
-            "INSERT OR IGNORE INTO accounts(key, institution, type, currency, external_id) VALUES (?,?,?,?,?)",
-            (a.key, a.institution, a.type, a.currency, a.ofx_acctid or None),
+            "INSERT OR IGNORE INTO accounts(key, institution, type, currency, external_id, locked) VALUES (?,?,?,?,?,?)",
+            (a.key, a.institution, a.type, a.currency, a.ofx_acctid or None, int(a.locked)),
         )
+        conn.execute("UPDATE accounts SET locked = ? WHERE key = ?", (int(a.locked), a.key))
     conn.commit()
 
 
@@ -501,8 +502,13 @@ def report_networth(
     if not rows:
         typer.echo("No balance snapshots yet. Sync or ingest an OFX with a ledger balance.")
         return
+    split = {s["currency"]: s for s in advisor.net_worth_split(conn)}
     for r in rows:
         typer.echo(f"{money.from_minor(r.net_worth_minor, r.currency):>14} {r.currency}  (as of {r.freshest_as_of})")
+        s = split.get(r.currency)
+        if s and s["locked_minor"]:
+            typer.echo(f"    accessible {money.from_minor(s['accessible_minor'], r.currency):>12} {r.currency}")
+            typer.echo(f"    locked     {money.from_minor(s['locked_minor'], r.currency):>12} {r.currency}  (not spendable)")
 
 
 @report_app.command("savings")

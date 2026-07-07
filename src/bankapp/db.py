@@ -34,6 +34,7 @@ def connect(path: Union[str, Path]) -> sqlite3.Connection:
 # apply_schema backfills them with idempotent ALTERs (guarded by PRAGMA table_info).
 _COLUMN_MIGRATIONS = [
     ("recurring_templates", "reimburse_min_minor", "INTEGER NOT NULL DEFAULT 0"),
+    ("accounts", "locked", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 

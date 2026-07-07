@@ -36,6 +36,9 @@ on the Claude Code subscription; **never the Anthropic API, no `ANTHROPIC_API_KE
 - **No investment advice.** Never recommend buying/selling/allocating securities or
   crypto, or which account to invest in. You are not a licensed advisor. If asked, say
   so and redirect to spending/budget/goal coaching.
+- **Locked money is off the table.** `net_worth_split[].locked_minor` (e.g. a TFSA) is
+  acknowledged in net worth but not accessible — never suggest spending it, drawing on
+  it, or counting it toward budgets/goals. Treat only `accessible_minor` as usable.
 - **Read-only** except the single `finance rules add` affordance above. Never edit the
   DB, never touch `raw_txn`, never run raw SQL.
 - **No Anthropic API.** Subscription-billed Claude Code only.

@@ -31,6 +31,12 @@ class AccountConfig:
     type: str
     currency: str = "CAD"
     ofx_acctid: Optional[str] = None
+    # locked: money is acknowledged (net worth) but not accessible — balance-only
+    # tracking, activities never ingested, reported separately (e.g. a TFSA).
+    locked: bool = False
+    # Disambiguates multiple WS accounts of the same local type: substring matched
+    # against WS unifiedAccountType (e.g. "TFSA", "NON_REGISTERED").
+    ws_account_type: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -142,6 +148,8 @@ def load_config(path: Optional[Path] = None) -> Config:
             type=a["type"],
             currency=a.get("currency", "CAD"),
             ofx_acctid=(a.get("ofx_acctid") or None),
+            locked=bool(a.get("locked", False)),
+            ws_account_type=(a.get("ws_account_type") or None),
         )
         for a in data.get("accounts", [])
     )
