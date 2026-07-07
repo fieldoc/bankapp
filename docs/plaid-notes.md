@@ -1,10 +1,11 @@
 # Plaid notes (TP.0 gate)
 
-Status: **API grounded; TD-link decision pending the real link.** The plaid-python
-surface is verified against the installed version, so the adapter code is grounded. The
-one thing only a live link settles — *does TD Canada Trust connect on the Trial tier* —
-is confirmed the first time `finance plaid link` succeeds. Plaid's own dashboard shows
-"Automatic bank access — no action needed on the free trial" for US/CA institutions.
+Status: **PROCEED — confirmed on real data (2026-07-06).** TD Canada Trust links on the
+Plaid **Trial** tier (no business/Production application needed). A live
+`finance plaid link` + `finance sync plaid` pulled **86 real transactions** (5 skipped:
+pending / unmapped), a second sync was idempotent (0 inserted), and `finance report
+networth` returned a real per-currency balance from the Plaid accounts payload. The
+plaid-python surface below is verified against the installed version.
 
 ## Verified API (plaid-python 40.1.0, introspected from installed source)
 
