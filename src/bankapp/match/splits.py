@@ -330,13 +330,28 @@ def _recompute_status(conn, tmpl: Template, gid: int, expected_date: date, today
 # ---- top-level orchestration ------------------------------------------------
 
 def match_splits(conn: sqlite3.Connection, today: Optional[date] = None) -> int:
-    """Process all active split templates. Returns number of period groups touched."""
+    """Process all active split templates. Returns number of period groups touched.
+
+    Always re-derives: each run deletes the loaded templates' split groups (CASCADE
+    clears members) and rebuilds them from full history, so allocations are a pure
+    function of the ledger — a backfill import can never leave a reimbursement
+    frozen on the wrong period. Atomic (one transaction) and deterministic. Groups
+    of templates that fail to load, and generic transfer groups (type='transfer'),
+    are untouched.
+    """
     today = today or date.today()
     acct_ids = _account_ids(conn)
     now = _utc_now_iso()
     touched = 0
     with conn:
-        for tmpl in load_templates(conn):
+        tmpls = load_templates(conn)
+        if tmpls:
+            marks = ",".join("?" * len(tmpls))
+            conn.execute(
+                f"DELETE FROM groups WHERE type = 'split_expense' AND template_id IN ({marks})",
+                [t.id for t in tmpls],
+            )
+        for tmpl in tmpls:
             touched += _process_template(conn, tmpl, acct_ids, today, now)
     return touched
 

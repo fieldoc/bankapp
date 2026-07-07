@@ -450,7 +450,11 @@ def match_transfers_cmd(
 
 @match_app.command("splits")
 def match_splits_cmd() -> None:
-    """Build split-expense groups (rent chain, receivables) from templates."""
+    """Build split-expense groups (rent chain, receivables) from templates.
+
+    Split groups are always re-derived from full history, so a backfill import
+    self-corrects on the next run — no rebuild flag needed.
+    """
     from bankapp.match import splits
 
     cfg, conn = _load()
@@ -461,16 +465,26 @@ def match_splits_cmd() -> None:
 
 @match_app.command("all")
 def match_all_cmd(
-    rebuild: bool = typer.Option(False, "--rebuild", help="Rebuild generic transfer groups."),
+    rebuild: bool = typer.Option(
+        False, "--rebuild",
+        help="Release generic transfer groups first so split templates can reclaim "
+        "their legs, then re-pair the rest (split groups always re-derive).",
+    ),
 ) -> None:
     """Run splits BEFORE transfers (splits claim their own transfer legs first)."""
     from bankapp.match import splits, transfers
 
     cfg, conn = _load()
     splits.upsert_templates(conn, cfg.templates)
+    if rebuild:
+        # Free generic-group legs BEFORE splits runs: a leg stuck in a generic
+        # transfer group is invisible to _attach_transfer_legs, and deleting the
+        # generic groups after splits would strand it there forever.
+        with conn:
+            transfers.clear_generic_groups(conn)
     ns = splits.match_splits(conn)
     nt = transfers.match_transfers(
-        conn, cfg.transfers.window_days, cfg.transfers.tolerance_minor, rebuild=rebuild
+        conn, cfg.transfers.window_days, cfg.transfers.tolerance_minor
     )
     typer.echo(f"splits: {ns} period(s); transfers: {nt} pair(s)")
 
