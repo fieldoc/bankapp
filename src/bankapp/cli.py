@@ -248,18 +248,27 @@ def _ingest_inbox(cfg, conn) -> tuple[int, int, int, list[str]]:
 
 @ws_app.command("login")
 def ws_login() -> None:
-    """Interactive Wealthsimple login (email/password/TOTP). Token -> OS keyring.
+    """Interactive Wealthsimple login (email/password, then 2FA). Token -> OS keyring.
 
     You type your own credentials into this prompt; only the resulting session token is
     stored (in the OS keyring), never the password.
+
+    Two-step on purpose: WS only SENDS the 2FA code when a login attempt is made, so we
+    attempt first, and prompt for the code after OTPRequiredException tells us it's out.
     """
+    from ws_api import OTPRequiredException
+
     from bankapp.ingest import ws as wsmod
 
     username = typer.prompt("Wealthsimple email")
     password = typer.prompt("Password", hide_input=True)
-    otp = typer.prompt("2FA code (TOTP), blank if not prompted", default="")
     try:
-        wsmod.authenticate(username, password, otp=otp or None)
+        try:
+            wsmod.authenticate(username, password)
+        except OTPRequiredException:
+            typer.echo("A 2FA code was just sent to you by Wealthsimple.")
+            otp = typer.prompt("2FA code")
+            wsmod.authenticate(username, password, otp=otp.strip())
     except Exception as exc:  # noqa: BLE001 - surface any auth failure to the user
         typer.echo(f"Login failed: {exc}")
         raise typer.Exit(code=1)
