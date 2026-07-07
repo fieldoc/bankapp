@@ -86,6 +86,16 @@ def _ungrouped_hinted_legs(conn: sqlite3.Connection) -> list[Leg]:
     return [Leg(r["id"], r["account_id"], r["posted_date"], r["amount_minor"]) for r in rows]
 
 
+def clear_generic_groups(conn: sqlite3.Connection) -> None:
+    """Delete all generic transfer groups (CASCADE clears members).
+
+    Split-expense groups and the transfer legs they claimed are untouched. Caller
+    owns the transaction. Freed legs are re-claimable by split templates (which
+    match first) or re-paired by the next match_transfers run.
+    """
+    conn.execute("DELETE FROM groups WHERE type = 'transfer'")
+
+
 def match_transfers(
     conn: sqlite3.Connection,
     window_days: int,
@@ -102,7 +112,7 @@ def match_transfers(
     now = _utc_now_iso()
     with conn:
         if rebuild:
-            conn.execute("DELETE FROM groups WHERE type = 'transfer'")  # CASCADE clears members
+            clear_generic_groups(conn)
         pairs = pair_legs(_ungrouped_hinted_legs(conn), window_days, tolerance_minor)
         for p in pairs:
             cur = conn.execute(

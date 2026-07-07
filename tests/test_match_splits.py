@@ -208,3 +208,111 @@ def test_transfer_legs_linked_four_members(rent_db):
     splits.match_splits(conn, today=date(2026, 1, 15))
     roles = [r[0] for r in conn.execute("SELECT role FROM group_members ORDER BY role")]
     assert sorted(roles) == ["expense", "reimbursement", "transfer_in", "transfer_out"]
+
+
+# ---- always-re-derive: allocations are a pure function of full history ----
+
+def _period_of(conn, txn_id):
+    return conn.execute(
+        """SELECT g.period_key, g.status FROM group_members gm JOIN groups g ON g.id=gm.group_id
+           WHERE gm.raw_txn_id = ?""", (txn_id,)
+    ).fetchone()
+
+
+def test_backfill_self_heals_allocation(rent_db):
+    """A reimbursement allocated while history was partial must move to the
+    correct (older) period on the next plain run after a backfill import."""
+    conn, ids = rent_db
+    ws, td = ids["ws-cash"], ids["td-chequing"]
+
+    # Partial history: only February's expense is visible when the late-January
+    # payment arrives, so FIFO can only park it against February.
+    _expense(conn, ws, date_s="2026-02-01", dedup="e-feb")
+    pay = _reimb(conn, td, date_s="2026-01-20", dedup="r-jan")
+    splits.match_splits(conn, today=date(2026, 2, 10))
+    assert _period_of(conn, pay)["period_key"] == "2026-02"
+
+    # Backfill lands January's expense; the next ordinary run re-derives and
+    # the payment settles January — no flag, no manual intervention.
+    _expense(conn, ws, date_s="2026-01-01", dedup="e-jan")
+    splits.match_splits(conn, today=date(2026, 2, 10))
+    got = _period_of(conn, pay)
+    assert got["period_key"] == "2026-01"
+    assert got["status"] == "settled"
+
+
+def test_rederive_preserves_transfer_groups(rent_db):
+    """Re-deriving splits must not touch generic transfer groups."""
+    from bankapp.match import transfers
+
+    conn, ids = rent_db
+    out = _add(conn, ids["td-chequing"], "2026-01-05", -50000, "TFR-TO WS", "gt-out")
+    inn = _add(conn, ids["ws-cash"], "2026-01-05", 50000, "TFR-FR TD", "gt-in")
+    for rid in (out, inn):
+        conn.execute(
+            "INSERT INTO txn_interp(raw_txn_id, role_hint, updated_at) "
+            "VALUES (?, 'transfer', 't')", (rid,)
+        )
+    transfers.match_transfers(conn, window_days=7, tolerance_minor=0)
+    before = conn.execute("SELECT COUNT(*) FROM groups WHERE type='transfer'").fetchone()[0]
+    assert before == 1
+
+    splits.match_splits(conn, today=date(2026, 1, 15))
+    after = conn.execute("SELECT COUNT(*) FROM groups WHERE type='transfer'").fetchone()[0]
+    assert after == 1
+
+
+def test_match_all_rebuild_lets_split_reclaim_legs(rent_db):
+    """The `match all --rebuild` sequence (clear generic groups -> splits ->
+    transfers) must let a link_transfer template reclaim legs that an earlier
+    run had paired into a generic transfer group."""
+    from bankapp.match import transfers
+
+    conn, ids = rent_db
+    ws, td = ids["ws-cash"], ids["td-chequing"]
+
+    # The rent chain's own TD->WS legs, hinted as transfers.
+    out, inn = _transfer_pair(conn, ws, td)
+    for rid in (out, inn):
+        conn.execute(
+            "INSERT INTO txn_interp(raw_txn_id, role_hint, updated_at) "
+            "VALUES (?, 'transfer', 't')", (rid,)
+        )
+    # A run where the generic matcher grabbed them first (e.g. expense not yet synced).
+    transfers.match_transfers(conn, window_days=7, tolerance_minor=0)
+    assert conn.execute("SELECT COUNT(*) FROM groups WHERE type='transfer'").fetchone()[0] == 1
+
+    # Full history arrives; run the match-all --rebuild sequence.
+    _expense(conn, ws)
+    _reimb(conn, td)
+    with conn:
+        transfers.clear_generic_groups(conn)
+    splits.match_splits(conn, today=date(2026, 1, 15))
+    transfers.match_transfers(conn, window_days=7, tolerance_minor=0)
+
+    roles = [r[0] for r in conn.execute(
+        """SELECT gm.role FROM group_members gm JOIN groups g ON g.id=gm.group_id
+           WHERE g.type='split_expense' ORDER BY gm.role"""
+    )]
+    assert roles == ["expense", "reimbursement", "transfer_in", "transfer_out"]
+    assert conn.execute("SELECT COUNT(*) FROM groups WHERE type='transfer'").fetchone()[0] == 0
+
+
+def test_rederive_skips_wipe_when_no_templates(conn):
+    """If no active template loads, existing split groups must survive the run
+    (a config hiccup must not transiently un-share every historical expense)."""
+    from tests.conftest import insert_account
+
+    ws = insert_account(conn, key="ws-cash", institution="wealthsimple", type="cash")
+    insert_account(conn, key="td-chequing", institution="td", type="chequing")
+    splits.upsert_templates(conn, [RENT])
+    tid = conn.execute("SELECT id FROM recurring_templates WHERE name='rent'").fetchone()[0]
+    _add(conn, ws, "2026-01-01", -240000, "LANDLORD RENT PAYMENT", "e1")
+    splits.match_splits(conn, today=date(2026, 1, 15))
+    assert conn.execute("SELECT COUNT(*) FROM groups WHERE type='split_expense'").fetchone()[0] > 0
+
+    conn.execute("UPDATE recurring_templates SET active = 0 WHERE id = ?", (tid,))
+    conn.commit()
+    splits.match_splits(conn, today=date(2026, 1, 15))
+    survived = conn.execute("SELECT COUNT(*) FROM groups WHERE type='split_expense'").fetchone()[0]
+    assert survived > 0

@@ -64,7 +64,7 @@ finance categorize [--all]         # rules-first; idempotent
 finance rules add --kind substring --pattern netflix --category subscriptions
 finance rules list
 finance review count | export [--format json|markdown] [--out PATH]
-finance match splits | transfers | all [--rebuild]
+finance match splits | transfers [--rebuild] | all [--rebuild]   # splits always re-derive from full history
 finance status                     # uncategorized, pending transfers (aged), receivables, last sync
 finance report spend --month YYYY-MM [--by category]
 finance refresh                    # sync ws -> ingest inbox -> categorize -> match all
