@@ -78,7 +78,9 @@ class _FakeClient:
     def get_accounts(self):
         return self._accounts
 
-    def get_activities(self, ws_id, how_many=200):
+    def get_activities(self, ws_id, how_many=200, load_all=False):
+        self.last_how_many = how_many
+        self.last_load_all = load_all
         return list(self._activities.get(ws_id, []))
 
 
@@ -128,6 +130,22 @@ def test_sync_ws_idempotent(synced_db):
     report2 = ws.sync_ws(conn, cfg, client=client)
     assert report2.inserted == 0
     assert conn.execute("SELECT COUNT(*) FROM raw_txn").fetchone()[0] == 3
+
+
+def test_sync_ws_threads_load_all_and_how_many(synced_db):
+    """Deep-import override reaches the client: default is bounded/incremental, --all paginates."""
+    cfg, conn = synced_db
+    ws_accounts = [{"id": "ws-acct-cash-1", "unifiedAccountType": "CASH"}]
+
+    client = _FakeClient(ws_accounts, {"ws-acct-cash-1": []})
+    ws.sync_ws(conn, cfg, client=client)
+    assert client.last_how_many == 200
+    assert client.last_load_all is False
+
+    client = _FakeClient(ws_accounts, {"ws-acct-cash-1": []})
+    ws.sync_ws(conn, cfg, client=client, how_many=5000, load_all=True)
+    assert client.last_how_many == 5000
+    assert client.last_load_all is True
 
 
 def test_account_map_investing_first_does_not_hijack_cash_slot(synced_db):

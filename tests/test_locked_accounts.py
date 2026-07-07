@@ -61,7 +61,7 @@ class _Client:
     def get_accounts(self):
         return WS_ACCOUNTS
 
-    def get_activities(self, ws_id, how_many=200):
+    def get_activities(self, ws_id, how_many=200, load_all=False):
         self.activity_calls.append(ws_id)
         return []
 

@@ -332,13 +332,21 @@ def sync_plaid_cmd() -> None:
 
 
 @sync_app.command("ws")
-def sync_ws_cmd() -> None:
+def sync_ws_cmd(
+    all_history: bool = typer.Option(
+        False, "--all", help="Backfill ALL history (paginate every page). Run once to set "
+        "the baseline; scheduled/incremental syncs don't need it."
+    ),
+    how_many: int = typer.Option(
+        200, "--how-many", help="Max recent activities per account when not using --all."
+    ),
+) -> None:
     """Fetch Wealthsimple activities into raw_txn. Soft-skips on any WS error."""
     from bankapp.ingest import ws as wsmod
 
     cfg, conn = _load()
     sync_accounts(conn, cfg)
-    report = wsmod.sync_ws(conn, cfg)
+    report = wsmod.sync_ws(conn, cfg, how_many=how_many, load_all=all_history)
     for e in report.errors:
         typer.echo(f"WARNING: {e}")
     typer.echo(f"WS sync: {report.inserted} inserted, {report.skipped} skipped")

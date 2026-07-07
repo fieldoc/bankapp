@@ -284,8 +284,14 @@ def _capture_ws_balances(conn, cfg, client, id_to_key: dict[str, str], ws_accoun
             continue
 
 
-def sync_ws(conn, cfg, client=None, api_factory=None, how_many: int = 200) -> SyncReport:
-    """Fetch WS activities and ingest them. Any API error -> report.errors (scheduler-safe)."""
+def sync_ws(conn, cfg, client=None, api_factory=None, how_many: int = 200,
+            load_all: bool = False) -> SyncReport:
+    """Fetch WS activities and ingest them. Any API error -> report.errors (scheduler-safe).
+
+    how_many bounds the recent-activity window for incremental (scheduled) syncs; dedup
+    keys make overlap harmless. load_all=True paginates ALL history — use once to set the
+    baseline, not on every scheduled run.
+    """
     from bankapp import db as dbmod
     from bankapp.ingest import core
 
@@ -307,7 +313,7 @@ def sync_ws(conn, cfg, client=None, api_factory=None, how_many: int = 200) -> Sy
         for ws_id, key in id_to_key.items():
             if key in locked_keys:
                 continue  # balance-only: locked money is acknowledged, never ingested
-            activities = client.get_activities(ws_id, how_many=how_many)
+            activities = client.get_activities(ws_id, how_many=how_many, load_all=load_all)
             for act in activities:
                 mapped = map_activity(act, key, cfg.timezone)
                 if isinstance(mapped, SkipResult):
