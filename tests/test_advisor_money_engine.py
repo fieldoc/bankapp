@@ -123,3 +123,41 @@ def test_leak_aggregation_and_fees():
     assert by_merchant["tim"].count == 2
     assert "monthly" in by_merchant  # the fee row
     assert "big" not in by_merchant
+
+
+def test_cashflow_ungrouped_reimbursement_offsets_spend_not_income(conn):
+    a = insert_account(conn, key="ws-cash", institution="wealthsimple", type="cash")
+    _txn(conn, a, "2026-01-05", 500000, "payroll", "d1")            # income
+    _txn(conn, a, "2026-01-06", -100000, "dinner for two", "d2")    # spend (paid full)
+    r = _txn(conn, a, "2026-01-08", 40000, "etransfer from friend", "d3")  # their half back
+    conn.execute(
+        "INSERT INTO txn_interp(raw_txn_id, role_hint, updated_at) VALUES (?, 'reimbursement','t')", (r,)
+    )
+    conn.commit()
+
+    rows = {x.month: x for x in advisor.monthly_cashflow(conn)}
+    jan = rows["2026-01"]
+    assert jan.income_minor == 500000          # repayment is NOT income
+    assert jan.spend_minor == 60000            # spend is net of the repayment
+    assert jan.net_minor == 440000             # net unchanged by the reclassification
+
+
+def test_cashflow_grouped_reimbursement_not_double_counted(conn):
+    """A reimbursement claimed into a split group is already zeroed by the group;
+    the cashflow view must not subtract it from spend a second time."""
+    a = insert_account(conn, key="ws-cash", institution="wealthsimple", type="cash")
+    _txn(conn, a, "2026-01-05", 500000, "payroll", "d1")
+    _txn(conn, a, "2026-01-06", -100000, "spend", "d2")
+    r = _txn(conn, a, "2026-01-08", 40000, "etransfer from roommate", "d3")
+    conn.execute(
+        "INSERT INTO txn_interp(raw_txn_id, role_hint, updated_at) VALUES (?, 'reimbursement','t')", (r,)
+    )
+    conn.execute("INSERT INTO groups(id,type,status,created_at,updated_at) VALUES (9,'split_expense','open','t','t')")
+    conn.execute("INSERT INTO group_members(group_id,raw_txn_id,role) VALUES (9,?, 'reimbursement')", (r,))
+    conn.commit()
+
+    rows = {x.month: x for x in advisor.monthly_cashflow(conn)}
+    jan = rows["2026-01"]
+    assert jan.income_minor == 500000
+    assert jan.spend_minor == 100000           # no offset: the group already zeroed it
+    assert jan.net_minor == 400000

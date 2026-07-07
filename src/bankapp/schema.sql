@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS group_members (
 -- lone hinted-transfer legs excluded (pending, not lost).
 CREATE VIEW IF NOT EXISTS v_effective AS
 SELECT r.id, r.account_id, r.posted_date, r.currency, r.amount_minor, r.description_norm,
-  i.category, gm.role AS group_role, g.type AS group_type,
+  i.category, i.role_hint, gm.role AS group_role, g.type AS group_type,
   CASE
     WHEN gm.role IN ('transfer_in','transfer_out') THEN 0
     WHEN gm.role = 'reimbursement' THEN 0
@@ -173,10 +173,20 @@ JOIN (SELECT account_id, MAX(as_of) AS as_of FROM balance_snapshot GROUP BY acco
 GROUP BY b.currency;
 
 -- Am I saving? Monthly income/spend/net from effective amounts.
+-- Ungrouped reimbursement inflows (a friend repaying their share) are money coming
+-- BACK for spend already counted at face value: they reduce spend, they are not
+-- income. Group-claimed reimbursements are already zeroed in v_effective, so the
+-- offset applies only where group_role IS NULL. `IS` (not `=`) keeps NULL role_hint
+-- rows on the income side.
 CREATE VIEW IF NOT EXISTS v_monthly_cashflow AS
 SELECT substr(posted_date, 1, 7) AS month, currency,
-  SUM(CASE WHEN effective_minor > 0 THEN effective_minor ELSE 0 END) AS income_minor,
-  SUM(CASE WHEN effective_minor < 0 THEN -effective_minor ELSE 0 END) AS spend_minor,
+  SUM(CASE WHEN effective_minor > 0
+             AND NOT (role_hint IS 'reimbursement' AND group_role IS NULL)
+           THEN effective_minor ELSE 0 END) AS income_minor,
+  SUM(CASE WHEN effective_minor < 0 THEN -effective_minor ELSE 0 END)
+    - SUM(CASE WHEN effective_minor > 0
+                 AND role_hint IS 'reimbursement' AND group_role IS NULL
+               THEN effective_minor ELSE 0 END) AS spend_minor,
   SUM(effective_minor) AS net_minor
 FROM v_effective
 GROUP BY month, currency;

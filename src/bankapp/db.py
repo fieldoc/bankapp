@@ -37,9 +37,16 @@ _COLUMN_MIGRATIONS = [
     ("accounts", "locked", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
+# Views are pure derivations over immutable data, so the cheapest way to keep their
+# definitions current on an existing DB is drop-and-recreate on every startup —
+# CREATE VIEW IF NOT EXISTS would silently keep a stale definition forever.
+_VIEWS = ["v_effective", "v_pending_transfers", "v_net_worth", "v_monthly_cashflow", "v_receivables"]
+
 
 def apply_schema(conn: sqlite3.Connection) -> None:
     """Apply the DDL. Idempotent: every CREATE is IF NOT EXISTS + guarded ALTERs."""
+    for view in _VIEWS:
+        conn.execute(f"DROP VIEW IF EXISTS {view}")
     conn.executescript(_schema_sql())
     for table, column, decl in _COLUMN_MIGRATIONS:
         cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}

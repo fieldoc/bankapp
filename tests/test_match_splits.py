@@ -316,3 +316,57 @@ def test_rederive_skips_wipe_when_no_templates(conn):
     splits.match_splits(conn, today=date(2026, 1, 15))
     survived = conn.execute("SELECT COUNT(*) FROM groups WHERE type='split_expense'").fetchone()[0]
     assert survived > 0
+
+
+# ---- multiple reimburse accounts ----
+
+def test_reimbursement_claimed_from_second_account(conn):
+    """A rent payment landing in a second watched account (e.g. WS cash instead of
+    TD chequing) must still be claimed into the period group and settle it."""
+    from tests.conftest import insert_account
+
+    ws = insert_account(conn, key="ws-cash", institution="wealthsimple", type="cash")
+    insert_account(conn, key="td-chequing", institution="td", type="chequing")
+    multi = dataclasses.replace(RENT, reimburse_account="td-chequing,ws-cash")
+    splits.upsert_templates(conn, [multi])
+
+    _add(conn, ws, "2026-01-01", -240000, "LANDLORD RENT PAYMENT", "e1")
+    pay = _add(conn, ws, "2026-01-03", 120000, "ETRANSFER FROM ROOMMATE VANESSA", "r1")
+    splits.match_splits(conn, today=date(2026, 1, 15))
+
+    got = conn.execute(
+        """SELECT g.period_key, g.status, gm.role FROM group_members gm
+           JOIN groups g ON g.id=gm.group_id WHERE gm.raw_txn_id = ?""", (pay,)
+    ).fetchone()
+    assert got is not None and got["role"] == "reimbursement"
+    assert got["period_key"] == "2026-01"
+    assert got["status"] == "settled"
+
+
+def test_self_transfer_inflow_never_claimed_as_reimbursement(conn):
+    """An inflow already role-hinted 'transfer' (moving my own money between my
+    accounts) must not be FIFO-claimed as a roommate reimbursement, even when it
+    matches the reimburser pattern and clears the amount gate."""
+    from tests.conftest import insert_account
+
+    ws = insert_account(conn, key="ws-cash", institution="wealthsimple", type="cash")
+    insert_account(conn, key="td-chequing", institution="td", type="chequing")
+    multi = dataclasses.replace(
+        RENT, reimburse_account="td-chequing,ws-cash",
+        reimburser_pattern="e-transfer", reimburse_min_minor=90000,
+    )
+    splits.upsert_templates(conn, [multi])
+
+    _add(conn, ws, "2026-01-01", -240000, "LANDLORD RENT PAYMENT", "e1")
+    mine = _add(conn, ws, "2026-01-02", 150000, "E-TRANSFER FROM GRAHAM METCALFE", "self1")
+    conn.execute(
+        "INSERT INTO txn_interp(raw_txn_id, role_hint, updated_at) VALUES (?, 'transfer','t')", (mine,)
+    )
+    theirs = _add(conn, ws, "2026-01-03", 120000, "E-TRANSFER FROM VANESSA PEARCE", "roomie1")
+    splits.match_splits(conn, today=date(2026, 1, 15))
+
+    claimed = [r[0] for r in conn.execute(
+        """SELECT r.dedup_key FROM group_members gm JOIN raw_txn r ON r.id=gm.raw_txn_id
+           WHERE gm.role='reimbursement'"""
+    )]
+    assert claimed == ["roomie1"]

@@ -220,7 +220,14 @@ def _parse_template(t: dict) -> TemplateConfig:
         day_of_month=int(t.get("day_of_month", 1)),
         expense_account=t["expense_account"],
         expense_pattern=t["expense_pattern"],
-        reimburse_account=t["reimburse_account"],
+        # Single account key or a list (normalized to CSV): reimbursements may
+        # arrive in more than one account (e.g. roommate e-transfers to TD, a
+        # one-off payment straight into WS cash).
+        reimburse_account=(
+            ",".join(t["reimburse_account"])
+            if isinstance(t["reimburse_account"], list)
+            else t["reimburse_account"]
+        ),
         reimburser_pattern=t["reimburser_pattern"],
         amount_tolerance_minor=money.to_minor(t.get("amount_tolerance", "5.00"), currency),
         window_days=int(t.get("window_days", 45)),
