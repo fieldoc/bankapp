@@ -1,0 +1,172 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BankApp — Overview</title>
+<link rel="stylesheet" href="/app.css" />
+<script src="/vendor/chart.umd.js"></script>
+<script src="/app.js"></script>
+
+<main>
+  <h1 class="page-title">Overview</h1>
+  <p class="page-sub" id="asof">&nbsp;</p>
+
+  <section class="block">
+    <h2>Net worth</h2>
+    <div class="grid cols-3" id="nw-cards"></div>
+  </section>
+
+  <section class="block">
+    <h2>Net worth over time</h2>
+    <div class="panel" id="nw-hist-panel"><div class="chart-wrap"><canvas id="nw-hist"></canvas></div></div>
+  </section>
+
+  <section class="block">
+    <h2>Cash flow (recent months)</h2>
+    <div class="panel" id="cf-panel"><div class="chart-wrap"><canvas id="cf-chart"></canvas></div></div>
+  </section>
+
+  <section class="block">
+    <h2>Budgets</h2>
+    <div class="panel" id="budgets"></div>
+  </section>
+
+  <section class="block">
+    <h2>Advisor brief</h2>
+    <div class="panel" id="brief"></div>
+  </section>
+
+  <div class="dq" id="dq"></div>
+</main>
+
+<script>
+  (async function () {
+    await App.nav();
+    await App.loadMeta();
+    App.chartTheme();
+
+    const digest = await App.api("/api/digest");
+    App.el("asof").textContent = `as of ${digest.as_of}`;
+
+    // ---- net-worth cards ----
+    const cards = App.el("nw-cards");
+    if (!digest.net_worth || !digest.net_worth.length) {
+      App.empty(cards, "No balances yet — run <code>finance refresh</code>");
+    } else {
+      cards.innerHTML = "";
+      for (const nw of digest.net_worth) {
+        const delta = digest.net_worth_delta_minor ? digest.net_worth_delta_minor[nw.currency] : undefined;
+        const card = document.createElement("div");
+        card.className = "panel card";
+        let deltaHtml = "";
+        if (typeof delta === "number") {
+          const cls = delta >= 0 ? "pos" : "neg";
+          deltaHtml = `<div class="delta ${cls}">${App.fmtSignedMoney(delta, nw.currency)} vs prev month</div>`;
+        }
+        card.innerHTML =
+          `<div class="label">${nw.currency}</div>` +
+          `<div class="value">${App.fmtMoney(nw.net_worth_minor, nw.currency)}</div>` +
+          deltaHtml +
+          `<div class="sub">as of ${App.shortDate(nw.freshest_as_of)}</div>`;
+        cards.appendChild(card);
+      }
+    }
+
+    // ---- net-worth history line chart ----
+    const hist = await App.api("/api/networth/history");
+    if (!hist.length) {
+      App.empty(App.el("nw-hist-panel"), "No history yet — snapshots accrue as you sync.");
+    } else {
+      const byCur = {};
+      const months = [];
+      for (const r of hist) {
+        (byCur[r.currency] = byCur[r.currency] || {})[r.month] = r.net_worth_minor;
+        if (!months.includes(r.month)) months.push(r.month);
+      }
+      months.sort();
+      const pal = App.palette();
+      const datasets = Object.keys(byCur).map((cur, i) => ({
+        label: cur,
+        data: months.map((m) => (byCur[cur][m] != null ? byCur[cur][m] / Math.pow(10, App.exponentFor(cur)) : null)),
+        borderColor: pal[i % pal.length],
+        backgroundColor: pal[i % pal.length] + "22",
+        tension: 0.25, fill: true, spanGaps: true, pointRadius: 2,
+      }));
+      new Chart(App.el("nw-hist"), {
+        type: "line",
+        data: { labels: months, datasets },
+        options: { scales: { y: { ticks: { callback: (v) => v.toLocaleString() } } } },
+      });
+    }
+
+    // ---- cashflow combo (income/spend bars + net line) ----
+    const sav = digest.savings || [];
+    if (!sav.length) {
+      App.empty(App.el("cf-panel"), "No monthly cash flow yet.");
+    } else {
+      const exp = App.exponentFor(sav[0].currency || "CAD");
+      const div = (x) => (x || 0) / Math.pow(10, exp);
+      const labels = sav.map((s) => s.month);
+      new Chart(App.el("cf-chart"), {
+        data: {
+          labels,
+          datasets: [
+            { type: "bar", label: "income", data: sav.map((s) => div(s.income_minor)), backgroundColor: App.cssVar("--pos") + "cc" },
+            { type: "bar", label: "spend", data: sav.map((s) => div(s.spend_minor)), backgroundColor: App.cssVar("--neg") + "cc" },
+            { type: "line", label: "net", data: sav.map((s) => div(s.net_minor)), borderColor: App.cssVar("--accent"), tension: 0.25, pointRadius: 3 },
+          ],
+        },
+        options: { scales: { y: { ticks: { callback: (v) => v.toLocaleString() } } } },
+      });
+    }
+
+    // ---- budget progress bars ----
+    const bwrap = App.el("budgets");
+    const budgets = digest.budgets || [];
+    if (!budgets.length) {
+      App.empty(bwrap, "No budgets configured. Add <code>[budgets]</code> to your config.");
+    } else {
+      bwrap.innerHTML = "";
+      for (const b of budgets) {
+        const hasLimit = b.limit_minor != null;
+        const pct = hasLimit && b.limit_minor > 0 ? Math.min(100, (b.actual_minor / b.limit_minor) * 100) : 0;
+        const fillClass = b.over ? "over" : b.pace_warn ? "pace" : "";
+        let badge = "";
+        if (b.over) badge = `<span class="badge over">over</span>`;
+        else if (b.pace_warn) badge = `<span class="badge pace">pace</span>`;
+        const limitTxt = hasLimit ? App.fmtMoney(b.limit_minor, "CAD") : "no limit";
+        const row = document.createElement("div");
+        row.className = "bar-row";
+        row.innerHTML =
+          `<div class="bar-head"><span class="cat">${escapeHtml(b.category)} ${badge}</span>` +
+          `<span class="amt">${App.fmtMoney(b.actual_minor, "CAD")} / ${limitTxt}</span></div>` +
+          `<div class="bar-track"><div class="bar-fill ${fillClass}" style="width:${pct}%"></div></div>`;
+        bwrap.appendChild(row);
+      }
+    }
+
+    // ---- advisor brief ----
+    const briefEl = App.el("brief");
+    const brief = await App.api("/api/advice/latest");
+    if (!brief) {
+      App.empty(briefEl, "No advisor brief yet — run <code>/advisor</code> to generate one.");
+    } else {
+      briefEl.innerHTML =
+        `<div class="stamp">brief #${brief.id} · ${App.shortDate(brief.created_at)} · based on digest ${brief.digest_as_of} · ${escapeHtml(brief.source)}</div>` +
+        `<div class="brief">${App.renderMarkdown(brief.content_md)}</div>` +
+        `<div class="stamp" style="margin-top:14px"><a href="/advice.html">All briefs &rarr;</a></div>`;
+    }
+
+    // ---- data-quality footer ----
+    const dq = digest.data_quality || {};
+    App.el("dq").innerHTML =
+      `<span><b>uncategorized</b> ${digest.uncategorized_count || 0}</span>` +
+      `<span><b>pending transfers</b> ${(digest.pending_transfer_legs || []).length}</span>` +
+      `<span><b>last import</b> ${App.shortDate(dq.last_import) || "never"}</span>` +
+      `<span><b>last ws sync</b> ${App.shortDate(dq.last_ws_sync) || "never"}</span>`;
+
+    function escapeHtml(s) {
+      return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+  })();
+</script>

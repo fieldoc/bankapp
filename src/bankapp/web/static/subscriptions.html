@@ -1,0 +1,102 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BankApp — Subscriptions &amp; Leaks</title>
+<link rel="stylesheet" href="/app.css" />
+<script src="/vendor/chart.umd.js"></script>
+<script src="/app.js"></script>
+
+<main>
+  <h1 class="page-title">Subscriptions &amp; Leaks</h1>
+  <p class="page-sub">Recurring charges and the small drips that never feel like a decision.</p>
+
+  <section class="block">
+    <h2>Subscriptions</h2>
+    <div class="grid cols-2">
+      <div class="panel scroll-x" id="subs-table"></div>
+      <div class="panel" id="subs-chart-panel"><div class="chart-wrap short"><canvas id="subs-chart"></canvas></div></div>
+    </div>
+  </section>
+
+  <section class="block">
+    <h2>Leaks</h2>
+    <div class="grid cols-2">
+      <div class="panel scroll-x" id="leaks-table"></div>
+      <div class="panel" id="leaks-chart-panel"><div class="chart-wrap short"><canvas id="leaks-chart"></canvas></div></div>
+    </div>
+  </section>
+</main>
+
+<script>
+  (async function () {
+    await App.nav();
+    await App.loadMeta();
+    App.chartTheme();
+
+    // ---- subscriptions ----
+    const subs = await App.api("/api/subscriptions");
+    const subsTable = App.el("subs-table");
+    if (!subs.length) {
+      App.empty(subsTable, "No recurring subscriptions detected yet.");
+      App.empty(App.el("subs-chart-panel"), "Nothing to chart.");
+    } else {
+      let rows = "";
+      for (const s of subs) {
+        const creep = s.price_creep ? `<span class="badge creep">price up</span>` : "";
+        rows +=
+          `<tr>` +
+          `<td class="desc">${App.esc(s.merchant)} ${creep}</td>` +
+          `<td>${App.esc(s.cadence)}</td>` +
+          `<td class="num">${App.fmtMoney(s.monthly_cost_minor, s.currency)}</td>` +
+          `<td class="num">${s.count}</td>` +
+          `<td>${App.shortDate(s.last_charge)}</td>` +
+          `</tr>`;
+      }
+      subsTable.innerHTML =
+        `<table class="tbl"><thead><tr><th>Merchant</th><th>Cadence</th><th class="num">Monthly</th><th class="num">Seen</th><th>Last charge</th></tr></thead><tbody>${rows}</tbody></table>`;
+
+      const exp = App.exponentFor(subs[0].currency || "CAD");
+      new Chart(App.el("subs-chart"), {
+        type: "doughnut",
+        data: {
+          labels: subs.map((s) => s.merchant),
+          datasets: [{ data: subs.map((s) => s.monthly_cost_minor / Math.pow(10, exp)), backgroundColor: App.palette(), borderWidth: 0 }],
+        },
+        options: { plugins: { legend: { position: "right" } } },
+      });
+    }
+
+    // ---- leaks ----
+    const leaks = await App.api("/api/leaks");
+    const leaksTable = App.el("leaks-table");
+    if (!leaks.length) {
+      App.empty(leaksTable, "No leaks flagged. Nicely done.");
+      App.empty(App.el("leaks-chart-panel"), "Nothing to chart.");
+    } else {
+      let rows = "";
+      for (const l of leaks) {
+        rows +=
+          `<tr>` +
+          `<td class="desc">${App.esc(l.merchant)}</td>` +
+          `<td>${App.esc(l.month)}</td>` +
+          `<td class="num">${App.fmtMoney(l.total_minor, l.currency)}</td>` +
+          `<td class="num">${l.count}</td>` +
+          `</tr>`;
+      }
+      leaksTable.innerHTML =
+        `<table class="tbl"><thead><tr><th>Merchant</th><th>Month</th><th class="num">Total</th><th class="num">Count</th></tr></thead><tbody>${rows}</tbody></table>`;
+
+      // top leaks (already sorted desc by the API); take up to 10 for the bar
+      const top = leaks.slice(0, 10);
+      const exp = App.exponentFor(top[0].currency || "CAD");
+      new Chart(App.el("leaks-chart"), {
+        type: "bar",
+        data: {
+          labels: top.map((l) => `${l.merchant} (${l.month})`),
+          datasets: [{ label: "leak total", data: top.map((l) => l.total_minor / Math.pow(10, exp)), backgroundColor: App.cssVar("--warn") + "cc", borderWidth: 0 }],
+        },
+        options: { indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { ticks: { callback: (v) => v.toLocaleString() } } } },
+      });
+    }
+  })();
+</script>

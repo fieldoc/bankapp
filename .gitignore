@@ -11,6 +11,9 @@ quarantine/
 # Secrets / env
 .env
 
+# Build-process progress board (transient; removed by /full:save)
+FULL-BUILD-PLAN.md
+
 # Python
 __pycache__/
 *.pyc

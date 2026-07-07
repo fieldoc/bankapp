@@ -199,3 +199,16 @@ LEFT JOIN (SELECT gm.group_id, SUM(ABS(r.amount_minor)) AS received_minor
            FROM group_members gm JOIN raw_txn r ON r.id = gm.raw_txn_id
            WHERE gm.role = 'reimbursement' GROUP BY gm.group_id) reimb ON reimb.group_id = g.id
 WHERE g.type = 'split_expense';
+
+-- Persisted advisor briefs (Claude coaching output). Append-only, like raw_txn.
+CREATE TABLE IF NOT EXISTS advisor_brief (
+  id INTEGER PRIMARY KEY,
+  created_at TEXT NOT NULL,           -- ISO-8601 UTC
+  digest_as_of TEXT NOT NULL,         -- the digest 'as_of' date this brief was based on (YYYY-MM-DD)
+  content_md TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'claude' CHECK (source IN ('claude','manual'))
+);
+CREATE TRIGGER IF NOT EXISTS advisor_brief_no_update BEFORE UPDATE ON advisor_brief
+BEGIN SELECT RAISE(ABORT, 'advisor_brief is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS advisor_brief_no_delete BEFORE DELETE ON advisor_brief
+BEGIN SELECT RAISE(ABORT, 'advisor_brief is append-only'); END;

@@ -1,0 +1,174 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BankApp — Transactions</title>
+<link rel="stylesheet" href="/app.css" />
+<script src="/vendor/chart.umd.js"></script>
+<script src="/app.js"></script>
+
+<main>
+  <h1 class="page-title">Transactions</h1>
+  <p class="page-sub">Effective amounts — transfers net to zero, split expenses count your share only.</p>
+
+  <div class="filters">
+    <div class="fld"><label>Month</label><select id="f-month"></select></div>
+    <div class="fld"><label>Account</label><select id="f-account"></select></div>
+    <div class="fld"><label>Category</label><select id="f-category"></select></div>
+    <div class="fld"><label>Search</label><input id="f-q" placeholder="description..." /></div>
+    <button class="btn" id="apply">Apply</button>
+    <button class="btn ghost" id="clear">Clear</button>
+  </div>
+
+  <div class="chipset" id="subtotals"></div>
+
+  <section class="block">
+    <div class="panel scroll-x" id="tx-panel"></div>
+    <div class="pager" id="pager"></div>
+  </section>
+
+  <section class="block">
+    <h2>Spend by category (selected month)</h2>
+    <div class="panel" id="spend-panel"><div class="chart-wrap short"><canvas id="spend-chart"></canvas></div></div>
+  </section>
+</main>
+
+<script>
+  (async function () {
+    await App.nav();
+    const meta = await App.loadMeta();
+    App.chartTheme();
+    let page = 1;
+    let spendChart = null;
+
+    // populate filters
+    fillSelect("f-month", meta.months, "All months");
+    fillSelect("f-account", meta.accounts.map((a) => a.key), "All accounts");
+    fillSelect("f-category", meta.categories, "All categories");
+
+    function fillSelect(id, values, allLabel) {
+      const s = App.el(id);
+      s.innerHTML = `<option value="">${allLabel}</option>`;
+      for (const v of values || []) {
+        const o = document.createElement("option");
+        o.value = v; o.textContent = v;
+        s.appendChild(o);
+      }
+    }
+
+    function filters() {
+      return {
+        month: App.el("f-month").value,
+        account: App.el("f-account").value,
+        category: App.el("f-category").value,
+        q: App.el("f-q").value.trim(),
+      };
+    }
+
+    function qs(extra) {
+      const f = filters();
+      const p = new URLSearchParams();
+      if (f.month) p.set("month", f.month);
+      if (f.account) p.set("account", f.account);
+      if (f.category) p.set("category", f.category);
+      if (f.q) p.set("q", f.q);
+      for (const k in extra) p.set(k, extra[k]);
+      return p.toString();
+    }
+
+    async function load() {
+      const data = await App.api("/api/transactions?" + qs({ page, page_size: 50 }));
+      renderSubtotals(data.subtotals || []);
+      renderTable(data.items || []);
+      renderPager(data);
+      loadSpend();
+    }
+
+    function renderSubtotals(subs) {
+      const el = App.el("subtotals");
+      el.innerHTML = "";
+      if (!subs.length) return;
+      for (const s of subs) {
+        const chip = document.createElement("span");
+        chip.className = "subtotal";
+        chip.innerHTML = `${s.currency} · <span class="pos">in ${App.fmtMoney(s.income_minor, s.currency)}</span> · <span class="neg">out ${App.fmtMoney(s.spend_minor, s.currency)}</span>`;
+        el.appendChild(chip);
+      }
+    }
+
+    function renderTable(items) {
+      const panel = App.el("tx-panel");
+      if (!items.length) { App.empty(panel, "No transactions match these filters."); return; }
+      let rows = "";
+      for (const t of items) {
+        const netted = t.group_role && t.effective_minor === 0;
+        const cls = netted ? "netted" : "";
+        const amtCell = netted
+          ? `<span class="strike">${App.fmtMoney(t.amount_minor, t.currency)}</span> <span class="muted">0.00</span>`
+          : moneyCell(t.effective_minor, t.currency);
+        const roleBadge = t.group_role ? `<span class="badge role">${App.esc(t.group_role)}</span>` : "";
+        rows +=
+          `<tr class="${cls}">` +
+          `<td>${App.esc(t.posted_date)}</td>` +
+          `<td>${App.esc(t.account_key)}</td>` +
+          `<td class="desc">${App.esc(t.description_norm)} ${roleBadge}</td>` +
+          `<td>${App.esc(t.category)}</td>` +
+          `<td class="num">${amtCell}</td>` +
+          `</tr>`;
+      }
+      panel.innerHTML =
+        `<table class="tbl"><thead><tr>` +
+        `<th>Date</th><th>Account</th><th>Description</th><th>Category</th><th class="num">Effective</th>` +
+        `</tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    function moneyCell(minor, cur) {
+      const cls = minor > 0 ? "pos" : minor < 0 ? "neg" : "muted";
+      return `<span class="${cls}">${App.fmtMoney(minor, cur)}</span>`;
+    }
+
+    function renderPager(data) {
+      const el = App.el("pager");
+      const total = data.total || 0;
+      const size = data.page_size || 50;
+      const pages = Math.max(1, Math.ceil(total / size));
+      el.innerHTML = "";
+      const prev = document.createElement("button");
+      prev.className = "btn ghost"; prev.textContent = "‹ Prev"; prev.disabled = page <= 1;
+      prev.onclick = () => { if (page > 1) { page--; load(); } };
+      const next = document.createElement("button");
+      next.className = "btn ghost"; next.textContent = "Next ›"; next.disabled = page >= pages;
+      next.onclick = () => { if (page < pages) { page++; load(); } };
+      const label = document.createElement("span");
+      label.textContent = `page ${page} / ${pages} · ${total} rows`;
+      el.appendChild(prev); el.appendChild(label); el.appendChild(next);
+    }
+
+    async function loadSpend() {
+      const month = App.el("f-month").value || (meta.months && meta.months[0]);
+      const panel = App.el("spend-panel");
+      if (!month) { App.empty(panel, "Pick a month to see spend by category."); return; }
+      const rows = await App.api("/api/spend?by=category&month=" + encodeURIComponent(month));
+      if (spendChart) { spendChart.destroy(); spendChart = null; }
+      if (!rows.length) { App.empty(panel, "No spend recorded for " + month + "."); return; }
+      panel.innerHTML = `<div class="chart-wrap short"><canvas id="spend-chart"></canvas></div>`;
+      const exp = App.exponentFor(rows[0].currency || "CAD");
+      spendChart = new Chart(App.el("spend-chart"), {
+        type: "doughnut",
+        data: {
+          labels: rows.map((r) => r.category),
+          datasets: [{ data: rows.map((r) => r.spend_minor / Math.pow(10, exp)), backgroundColor: App.palette(), borderWidth: 0 }],
+        },
+        options: { plugins: { legend: { position: "right" } } },
+      });
+    }
+
+    App.el("apply").onclick = () => { page = 1; load(); };
+    App.el("clear").onclick = () => {
+      App.el("f-month").value = ""; App.el("f-account").value = "";
+      App.el("f-category").value = ""; App.el("f-q").value = ""; page = 1; load();
+    };
+    App.el("f-q").addEventListener("keydown", (e) => { if (e.key === "Enter") { page = 1; load(); } });
+
+    load();
+  })();
+</script>

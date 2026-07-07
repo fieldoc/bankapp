@@ -30,6 +30,9 @@ on the Claude Code subscription; **never the Anthropic API, no `ANTHROPIC_API_KE
 4. If you spot a clearly miscategorized transaction driving a wrong number, you MAY fix
    it by adding a rule via `finance rules add ... --source claude` (then note it). That
    is the ONLY write you may make.
+5. After delivering the coaching text, persist the exact brief: write it to a temp file
+   and run `finance advice add --file <path> --source claude --as-of <the digest's
+   as_of>`. The dashboard (`finance serve`, coming) displays the latest brief.
 
 ## Hard boundaries
 
@@ -39,8 +42,9 @@ on the Claude Code subscription; **never the Anthropic API, no `ANTHROPIC_API_KE
 - **Locked money is off the table.** `net_worth_split[].locked_minor` (e.g. a TFSA) is
   acknowledged in net worth but not accessible — never suggest spending it, drawing on
   it, or counting it toward budgets/goals. Treat only `accessible_minor` as usable.
-- **Read-only** except the single `finance rules add` affordance above. Never edit the
-  DB, never touch `raw_txn`, never run raw SQL.
+- **Read-only** except two allowed writes: `finance rules add ... --source claude` (the
+  affordance above) and `finance advice add ... --source claude` (persisting the brief).
+  Never edit the DB, never touch `raw_txn`, never run raw SQL.
 - **No Anthropic API.** Subscription-billed Claude Code only.
 - If `data_quality` shows a stale sync or a WS error, mention it — advice is only as
   fresh as the last sync.
