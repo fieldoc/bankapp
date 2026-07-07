@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS recurring_templates (
   day_of_month INTEGER NOT NULL DEFAULT 1,
   window_days INTEGER NOT NULL DEFAULT 45,   -- reimbursement due window
   link_transfer INTEGER NOT NULL DEFAULT 1,  -- claim TD->WS legs into this group
+  reimburse_min_minor INTEGER NOT NULL DEFAULT 0,  -- amount gate for anonymized e-transfers
   active INTEGER NOT NULL DEFAULT 1
 );
 

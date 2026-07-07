@@ -67,6 +67,10 @@ class TemplateConfig:
     window_days: int
     link_transfer: bool
     cadence: str = "monthly"
+    # Minimum inflow amount to count as a reimbursement. Needed when the bank
+    # anonymizes e-transfer senders (TD via Plaid: 'e-transfer ***kgt'), making the
+    # pattern too broad — the amount becomes the discriminating signal. 0 = no gate.
+    reimburse_min_minor: int = 0
 
 
 @dataclass(frozen=True)
@@ -214,4 +218,5 @@ def _parse_template(t: dict) -> TemplateConfig:
         window_days=int(t.get("window_days", 45)),
         link_transfer=bool(t.get("link_transfer", True)),
         cadence=t.get("cadence", "monthly"),
+        reimburse_min_minor=money.to_minor(t.get("reimburse_min_amount", "0.00"), currency),
     )

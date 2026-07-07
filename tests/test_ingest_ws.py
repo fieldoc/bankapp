@@ -130,6 +130,52 @@ def test_sync_ws_idempotent(synced_db):
     assert conn.execute("SELECT COUNT(*) FROM raw_txn").fetchone()[0] == 3
 
 
+def test_account_map_investing_first_does_not_hijack_cash_slot(synced_db):
+    """Regression: WS listed the TFSA before CASH; the old greedy fallback let the TFSA
+    claim the only 'ws-cash' config slot and the real Cash account was silently skipped."""
+    cfg, conn = synced_db  # config has ONLY ws-cash (type 'cash')
+    ws_accounts = [
+        {"id": "ws-tfsa-1", "unifiedAccountType": "SELF_DIRECTED_TFSA"},  # listed first!
+        {"id": "ws-cash-1", "unifiedAccountType": "CASH"},
+    ]
+    mapping = ws.resolve_ws_account_map(conn, cfg, ws_accounts)
+    assert mapping == {"ws-cash-1": "ws-cash"}  # TFSA skipped, NOT mis-mapped
+
+
+def test_account_map_both_slots_configured(app_env, monkeypatch):
+    """With cash + investment config slots, both WS accounts map by type."""
+    import bankapp.config as configmod
+    from bankapp import db as dbmod
+    from bankapp.cli import sync_accounts
+
+    # extend the test config with an investment account
+    cfg_path = app_env["config"]
+    cfg_path.write_text(cfg_path.read_text() + """
+[[accounts]]
+key = "ws-invest"
+institution = "wealthsimple"
+type = "investment"
+currency = "CAD"
+""")
+    cfg = configmod.load_config(cfg_path)
+    conn = dbmod.init_db(cfg.db_path)
+    sync_accounts(conn, cfg)
+    ws_accounts = [
+        {"id": "ws-tfsa-1", "unifiedAccountType": "SELF_DIRECTED_TFSA"},
+        {"id": "ws-cash-1", "unifiedAccountType": "CASH"},
+    ]
+    mapping = ws.resolve_ws_account_map(conn, cfg, ws_accounts)
+    assert mapping == {"ws-tfsa-1": "ws-invest", "ws-cash-1": "ws-cash"}
+
+
+def test_ws_type_for_investment_family():
+    assert ws._ws_type_for("SELF_DIRECTED_TFSA") == "investment"
+    assert ws._ws_type_for("MANAGED_RRSP") == "investment"
+    assert ws._ws_type_for("SELF_DIRECTED_NON_REGISTERED") == "investment"
+    assert ws._ws_type_for("CASH") == "cash"
+    assert ws._ws_type_for("MYSTERY_TYPE") is None
+
+
 def test_sync_ws_records_external_id(synced_db):
     cfg, conn = synced_db
     ws_accounts = [{"id": "ws-acct-cash-1", "unifiedAccountType": "CASH"}]

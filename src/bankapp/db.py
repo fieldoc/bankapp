@@ -30,9 +30,20 @@ def connect(path: Union[str, Path]) -> sqlite3.Connection:
     return conn
 
 
+# Columns added after v0.2.0. CREATE IF NOT EXISTS won't alter existing tables, so
+# apply_schema backfills them with idempotent ALTERs (guarded by PRAGMA table_info).
+_COLUMN_MIGRATIONS = [
+    ("recurring_templates", "reimburse_min_minor", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+
 def apply_schema(conn: sqlite3.Connection) -> None:
-    """Apply the DDL. Idempotent: every CREATE is IF NOT EXISTS."""
+    """Apply the DDL. Idempotent: every CREATE is IF NOT EXISTS + guarded ALTERs."""
     conn.executescript(_schema_sql())
+    for table, column, decl in _COLUMN_MIGRATIONS:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
     conn.commit()
 
 

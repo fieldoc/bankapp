@@ -43,6 +43,7 @@ class Template:
     day_of_month: int
     window_days: int
     link_transfer: int
+    reimburse_min_minor: int = 0
 
 
 # ---- T6.1 template upsert ---------------------------------------------------
@@ -57,8 +58,8 @@ def upsert_templates(conn: sqlite3.Connection, templates) -> int:
                      (name, kind, expected_amount_minor, currency, cadence,
                       share_numer, share_denom, expense_account, expense_pattern,
                       reimburse_account, reimburser_pattern, amount_tolerance_minor,
-                      day_of_month, window_days, link_transfer, active)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)
+                      day_of_month, window_days, link_transfer, reimburse_min_minor, active)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)
                    ON CONFLICT(name) DO UPDATE SET
                      kind=excluded.kind, expected_amount_minor=excluded.expected_amount_minor,
                      currency=excluded.currency, cadence=excluded.cadence,
@@ -68,12 +69,14 @@ def upsert_templates(conn: sqlite3.Connection, templates) -> int:
                      reimburser_pattern=excluded.reimburser_pattern,
                      amount_tolerance_minor=excluded.amount_tolerance_minor,
                      day_of_month=excluded.day_of_month, window_days=excluded.window_days,
-                     link_transfer=excluded.link_transfer""",
+                     link_transfer=excluded.link_transfer,
+                     reimburse_min_minor=excluded.reimburse_min_minor""",
                 (
                     t.name, t.kind, t.expected_amount_minor, t.currency, t.cadence,
                     t.share_numer, t.share_denom, t.expense_account, t.expense_pattern,
                     t.reimburse_account, t.reimburser_pattern, t.amount_tolerance_minor,
                     t.day_of_month, t.window_days, int(t.link_transfer),
+                    getattr(t, "reimburse_min_minor", 0),
                 ),
             )
             n += 1
@@ -84,7 +87,8 @@ def load_templates(conn: sqlite3.Connection) -> list[Template]:
     rows = conn.execute(
         """SELECT id, name, expected_amount_minor, currency, share_numer, share_denom,
                   expense_account, expense_pattern, reimburse_account, reimburser_pattern,
-                  amount_tolerance_minor, day_of_month, window_days, link_transfer
+                  amount_tolerance_minor, day_of_month, window_days, link_transfer,
+                  reimburse_min_minor
            FROM recurring_templates WHERE active = 1 AND kind = 'split_expense'"""
     ).fetchall()
     return [
@@ -95,6 +99,7 @@ def load_templates(conn: sqlite3.Connection) -> list[Template]:
             reimburse_account=r["reimburse_account"], reimburser_pattern=r["reimburser_pattern"],
             amount_tolerance_minor=r["amount_tolerance_minor"], day_of_month=r["day_of_month"],
             window_days=r["window_days"], link_transfer=r["link_transfer"],
+            reimburse_min_minor=r["reimburse_min_minor"],
         )
         for r in rows
     ]
@@ -261,7 +266,10 @@ def _match_reimbursements(conn, tmpl: Template, reimb_acct_id: int) -> None:
            ORDER BY r.posted_date, r.id""",
         (reimb_acct_id,),
     ).fetchall()
-    candidates = [r for r in rows if pat.search(r["description_norm"])]
+    candidates = [
+        r for r in rows
+        if pat.search(r["description_norm"]) and r["amount_minor"] >= tmpl.reimburse_min_minor
+    ]
 
     # period groups of this template, oldest first
     groups = conn.execute(

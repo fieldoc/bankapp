@@ -31,6 +31,17 @@ _WS_TYPE_MAP = {
 }
 
 
+def _ws_type_for(unified_account_type: str) -> Optional[str]:
+    """Our accounts.type for a WS unifiedAccountType; investment-family types
+    (TFSA/RRSP/RRIF/FHSA/LIRA/non-registered) all map to 'investment'."""
+    t = (unified_account_type or "").upper()
+    if t in _WS_TYPE_MAP:
+        return _WS_TYPE_MAP[t]
+    if any(tok in t for tok in ("TFSA", "RRSP", "RRIF", "FHSA", "LIRA", "NON_REGISTERED")):
+        return "investment"
+    return None
+
+
 class NoSessionError(RuntimeError):
     """No stored WS session; the user must run `finance ws login`."""
 
@@ -158,18 +169,35 @@ def resolve_ws_account_map(conn, cfg, ws_accounts: list[dict]) -> dict[str, str]
     ws_cfg = [a for a in cfg.accounts if a.institution == "wealthsimple"]
     used: set[str] = set()
     mapping: dict[str, str] = {}
+
+    # Pass 1: exact type matches only. This must win — a greedy fallback here once let
+    # an investing account claim the 'ws-cash' slot and silently skip the real Cash
+    # account (whose activity was the whole point).
+    unmatched: list[dict] = []
     for wsa in ws_accounts:
         ws_id = wsa.get("id")
-        want = _WS_TYPE_MAP.get(wsa.get("unifiedAccountType", ""), None)
-        match = next(
-            (a for a in ws_cfg if a.key not in used and (want is None or a.type == want)),
-            next((a for a in ws_cfg if a.key not in used), None),
-        )
-        if match is None or ws_id is None:
+        if ws_id is None:
+            continue
+        want = _ws_type_for(wsa.get("unifiedAccountType", ""))
+        match = next((a for a in ws_cfg if a.key not in used and want is not None and a.type == want), None)
+        if match is None:
+            unmatched.append(wsa)
             continue
         used.add(match.key)
         mapping[ws_id] = match.key
-        conn.execute("UPDATE accounts SET external_id = ? WHERE key = ?", (ws_id, match.key))
+
+    # Pass 2: only WS accounts of UNKNOWN type may take a leftover config slot.
+    for wsa in unmatched:
+        if _ws_type_for(wsa.get("unifiedAccountType", "")) is not None:
+            continue  # known type with no matching config slot -> skip, don't hijack
+        match = next((a for a in ws_cfg if a.key not in used), None)
+        if match is None:
+            continue
+        used.add(match.key)
+        mapping[wsa["id"]] = match.key
+
+    for ws_id, key in mapping.items():
+        conn.execute("UPDATE accounts SET external_id = ? WHERE key = ?", (ws_id, key))
     conn.commit()
     return mapping
 

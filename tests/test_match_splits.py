@@ -153,6 +153,51 @@ def test_partial_payments_accumulate(rent_db):
     assert r["status"] == "settled"
 
 
+# ---- amount-gated reimbursement matching (anonymized e-transfer senders) ----
+
+RENT_AMOUNT_GATED = dataclasses.replace(
+    RENT,
+    reimburser_pattern="e-transfer",      # TD anonymizes senders -> broad pattern...
+    reimburse_min_minor=90000,            # ...gated by amount (>= $900)
+)
+
+
+def test_reimburse_min_gates_small_etransfers(rent_db):
+    conn, ids = rent_db
+    splits.upsert_templates(conn, [RENT_AMOUNT_GATED])
+    _expense(conn, ids["ws-cash"])
+    # small unrelated e-transfer inflows in the window must NOT be claimed as rent
+    _add(conn, ids["td-chequing"], "2026-01-04", 5000, "E-TRANSFER ***abc", "small1")
+    _add(conn, ids["td-chequing"], "2026-01-08", 20000, "E-TRANSFER ***def", "small2")
+    # the roommate-sized one is claimed
+    _add(conn, ids["td-chequing"], "2026-01-05", 120000, "E-TRANSFER ***kgt", "rent1")
+
+    splits.match_splits(conn, today=date(2026, 1, 15))
+
+    claimed = conn.execute(
+        """SELECT r.dedup_key FROM group_members gm JOIN raw_txn r ON r.id = gm.raw_txn_id
+           WHERE gm.role = 'reimbursement'"""
+    ).fetchall()
+    assert [c[0] for c in claimed] == ["rent1"]
+    assert conn.execute("SELECT status FROM groups").fetchone()["status"] == "settled"
+
+
+def test_reimburse_min_zero_keeps_old_behavior(rent_db):
+    conn, ids = rent_db  # RENT has reimburse_min_minor=0 (default)
+    _expense(conn, ids["ws-cash"])
+    _reimb(conn, ids["td-chequing"], amt=60000, dedup="r_a")
+    _reimb(conn, ids["td-chequing"], date_s="2026-01-10", amt=60000, dedup="r_b")
+    splits.match_splits(conn, today=date(2026, 1, 15))
+    n = conn.execute("SELECT COUNT(*) FROM group_members WHERE role='reimbursement'").fetchone()[0]
+    assert n == 2  # partial payments still accumulate when no gate is set
+
+
+def test_reimburse_min_survives_upsert_roundtrip(conn):
+    splits.upsert_templates(conn, [RENT_AMOUNT_GATED])
+    t = splits.load_templates(conn)[0]
+    assert t.reimburse_min_minor == 90000
+
+
 # ---- T6.4 transfer-leg linking ----
 
 def test_transfer_legs_linked_four_members(rent_db):
