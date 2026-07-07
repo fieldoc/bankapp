@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BankApp — Advice</title>
+<link rel="stylesheet" href="/app.css" />
+<script src="/app.js"></script>
+
+<main>
+  <h1 class="page-title">Advisor briefs</h1>
+  <p class="page-sub">Claude's coaching, saved each run — newest first.</p>
+
+  <section class="block">
+    <div id="briefs"></div>
+  </section>
+</main>
+
+<script>
+  (async function () {
+    await App.nav();
+
+    const briefs = await App.api("/api/advice?limit=50");
+    const wrap = App.el("briefs");
+    if (!briefs.length) {
+      App.empty(wrap, "No advisor briefs yet — run <code>/advisor</code> to generate one.");
+      return;
+    }
+    wrap.innerHTML = "";
+    for (const b of briefs) {
+      const panel = document.createElement("div");
+      panel.className = "panel block";
+      panel.innerHTML =
+        `<div class="stamp">brief #${b.id} · ${App.shortDate(b.created_at)} · based on digest ${App.esc(b.digest_as_of)} · ${App.esc(b.source)}</div>` +
+        `<div class="brief">${App.renderMarkdown(b.content_md)}</div>`;
+      wrap.appendChild(panel);
+    }
+  })();
+</script>

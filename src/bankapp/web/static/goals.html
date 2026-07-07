@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BankApp — Goals</title>
+<link rel="stylesheet" href="/app.css" />
+<script src="/vendor/chart.umd.js"></script>
+<script src="/app.js"></script>
+
+<main>
+  <h1 class="page-title">Goals</h1>
+  <p class="page-sub">Where the money you keep is headed.</p>
+
+  <section class="block">
+    <div class="panel" id="goals"></div>
+  </section>
+</main>
+
+<script>
+  (async function () {
+    await App.nav();
+    await App.loadMeta();
+
+    const goals = await App.api("/api/goals");
+    const wrap = App.el("goals");
+    if (!goals.length) {
+      App.empty(wrap, "No goals configured. Add <code>[[goals]]</code> to your config.");
+      return;
+    }
+    wrap.innerHTML = "";
+    for (const g of goals) {
+      const pct = Math.max(0, Math.min(100, g.pct_complete || 0));
+      let paceCls = "ok", paceTxt = "on track";
+      if (g.pace === "behind") { paceCls = "pace"; paceTxt = "behind"; }
+      else if (g.pace === "no_target") { paceCls = "role"; paceTxt = "no target date"; }
+      const fill = g.pace === "behind" ? "pace" : "";
+      const row = document.createElement("div");
+      row.className = "bar-row";
+      row.innerHTML =
+        `<div class="bar-head">` +
+        `<span class="cat">${App.esc(g.name)} <span class="badge ${paceCls}">${paceTxt}</span> <span class="badge role">${g.allocation_pct}% alloc</span></span>` +
+        `<span class="amt">${App.fmtMoney(g.funded_minor, g.currency)} / ${App.fmtMoney(g.target_minor, g.currency)} · ${pct.toFixed(0)}%</span>` +
+        `</div>` +
+        `<div class="bar-track"><div class="bar-fill ${fill}" style="width:${pct}%"></div></div>`;
+      wrap.appendChild(row);
+    }
+  })();
+</script>

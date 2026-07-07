@@ -6,6 +6,8 @@ Console output is plain ASCII (legacy Windows consoles choke on Unicode symbols)
 from __future__ import annotations
 
 import sqlite3
+import sys
+from datetime import date
 from pathlib import Path
 from typing import List, Optional
 
@@ -37,6 +39,8 @@ budget_app = typer.Typer(help="Budget status.")
 app.add_typer(budget_app, name="budget")
 goals_app = typer.Typer(help="Savings goals.")
 app.add_typer(goals_app, name="goals")
+advice_app = typer.Typer(help="Persisted advisor briefs (Claude coaching output).")
+app.add_typer(advice_app, name="advice")
 
 _OFX_EXTS = {".ofx", ".qfx"}
 _CSV_EXTS = {".csv"}
@@ -704,6 +708,67 @@ def refresh() -> None:
 
     # 5+. snapshot balances wired in later phases.
     typer.echo("refresh complete")
+
+
+@advice_app.command("add")
+def advice_add(
+    file: Optional[Path] = typer.Option(None, "--file", help="Read brief content from this file."),
+    as_of: str = typer.Option(None, "--as-of", help="Digest as-of date (YYYY-MM-DD). Default: today."),
+    source: str = typer.Option("claude", "--source", help="claude | manual"),
+) -> None:
+    """Persist an advisor brief (Claude coaching output). Reads --file or stdin."""
+    from bankapp.report import briefs
+
+    if as_of is None:
+        as_of = date.today().isoformat()
+    content_md = Path(file).read_text(encoding="utf-8") if file is not None else sys.stdin.read()
+
+    _, conn = _load()
+    try:
+        brief_id = briefs.add_brief(conn, content_md, as_of, source=source)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}")
+        raise typer.Exit(1)
+    typer.echo(f"Brief #{brief_id} saved (as of {as_of}).")
+
+
+@advice_app.command("show")
+def advice_show() -> None:
+    """Print the latest brief's content (raw markdown)."""
+    from bankapp.report import briefs
+
+    _, conn = _load()
+    brief = briefs.latest(conn)
+    if brief is None:
+        typer.echo("No briefs yet.")
+        return
+    typer.echo(brief["content_md"])
+
+
+@advice_app.command("list")
+def advice_list() -> None:
+    """List briefs, newest first."""
+    from bankapp.report import briefs
+
+    _, conn = _load()
+    rows = briefs.list_briefs(conn)
+    if not rows:
+        typer.echo("No briefs yet.")
+        return
+    for r in rows:
+        first_line = r["content_md"].splitlines()[0] if r["content_md"] else ""
+        snippet = first_line[:60]
+        typer.echo(f"#{r['id']}  {r['created_at']}  as-of {r['digest_as_of']}  {snippet}")
+
+
+@app.command()
+def serve(port: int = typer.Option(8377, "--port"), no_open: bool = typer.Option(False, "--no-open")) -> None:
+    """Launch the local web dashboard (127.0.0.1 only)."""
+    from bankapp.web import app as webapp
+
+    cfg, conn = _load()
+    conn.close()
+    webapp.serve(cfg, port=port, open_browser=not no_open)
 
 
 if __name__ == "__main__":

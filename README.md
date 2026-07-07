@@ -68,9 +68,23 @@ finance match splits | transfers | all [--rebuild]
 finance status                     # uncategorized, pending transfers (aged), receivables, last sync
 finance report spend --month YYYY-MM [--by category]
 finance refresh                    # sync ws -> ingest inbox -> categorize -> match all
+finance advice add [--file PATH]   # persist an advisor brief (reads --file or stdin)
+finance advice show | list         # latest brief / brief history
+finance serve [--port 8377] [--no-open]   # local web dashboard (127.0.0.1 only)
 ```
 
 Automation: see [`docs/scheduling.md`](docs/scheduling.md) (Windows Task Scheduler first).
+
+## Dashboard (`finance serve`)
+
+`finance serve` starts a **local-only** web dashboard (binds `127.0.0.1`, opens your browser).
+Nothing leaves the machine — Chart.js is vendored under `src/bankapp/web/static/vendor/`, so
+no CDN is contacted at runtime. It reads the same SQLite DB as the CLI and is **read-only**:
+every write still goes through the CLI. Pages: Overview (net worth, cash flow, budgets, and the
+latest **advisor brief**), Transactions (filter/paginate, per-currency subtotals, netted
+transfers badged), Subscriptions & Leaks, Goals, Receivables, and Advice history. On a busy
+port it prints a friendly message; pass `--port` to pick another. The advisor skill persists its
+coaching via `finance advice add`, and the Overview surfaces the newest brief.
 
 ## Categorization workflow (Claude subscription, never the API)
 

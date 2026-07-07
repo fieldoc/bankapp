@@ -19,12 +19,12 @@ def _schema_sql() -> str:
     return resources.files("bankapp").joinpath(_SCHEMA_RESOURCE).read_text(encoding="utf-8")
 
 
-def connect(path: Union[str, Path]) -> sqlite3.Connection:
+def connect(path: Union[str, Path], check_same_thread: bool = True) -> sqlite3.Connection:
     """Open a connection with foreign keys ON and Row access by name."""
     p = Path(path).expanduser()
     if p.parent and str(p) != ":memory:":
         p.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(p))
+    conn = sqlite3.connect(str(p), check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

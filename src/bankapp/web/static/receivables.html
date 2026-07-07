@@ -1,0 +1,72 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BankApp — Receivables</title>
+<link rel="stylesheet" href="/app.css" />
+<script src="/vendor/chart.umd.js"></script>
+<script src="/app.js"></script>
+
+<main>
+  <h1 class="page-title">Receivables</h1>
+  <p class="page-sub">Split expenses awaiting reimbursement (e.g. a roommate's share of rent).</p>
+
+  <section class="block">
+    <div class="panel scroll-x" id="rec-table"></div>
+  </section>
+
+  <section class="block">
+    <h2>Outstanding by period</h2>
+    <div class="panel" id="rec-chart-panel"><div class="chart-wrap short"><canvas id="rec-chart"></canvas></div></div>
+  </section>
+</main>
+
+<script>
+  (async function () {
+    await App.nav();
+    await App.loadMeta();
+    App.chartTheme();
+
+    const recs = await App.api("/api/receivables");
+    const table = App.el("rec-table");
+    if (!recs.length) {
+      App.empty(table, "No split-expense receivables yet.");
+      App.empty(App.el("rec-chart-panel"), "Nothing to chart.");
+      return;
+    }
+
+    let rows = "";
+    for (const r of recs) {
+      const settled = r.status === "settled" || r.outstanding_minor === 0;
+      const cls = settled ? "dim" : "";
+      const statusBadge = settled ? `<span class="badge ok">settled</span>` : `<span class="badge pace">${App.esc(r.status)}</span>`;
+      rows +=
+        `<tr class="${cls}">` +
+        `<td class="desc">${App.esc(r.template)}</td>` +
+        `<td>${App.esc(r.period_key)}</td>` +
+        `<td>${statusBadge}</td>` +
+        `<td class="num">${App.fmtMoney(r.expected_minor, "CAD")}</td>` +
+        `<td class="num">${App.fmtMoney(r.received_minor, "CAD")}</td>` +
+        `<td class="num">${App.fmtMoney(r.outstanding_minor, "CAD")}</td>` +
+        `<td class="num">${r.age_days}d</td>` +
+        `</tr>`;
+    }
+    table.innerHTML =
+      `<table class="tbl"><thead><tr>` +
+      `<th>Template</th><th>Period</th><th>Status</th><th class="num">Expected</th><th class="num">Received</th><th class="num">Outstanding</th><th class="num">Age</th>` +
+      `</tr></thead><tbody>${rows}</tbody></table>`;
+
+    const outstanding = recs.filter((r) => r.outstanding_minor > 0);
+    if (!outstanding.length) {
+      App.empty(App.el("rec-chart-panel"), "Everything is settled.");
+      return;
+    }
+    new Chart(App.el("rec-chart"), {
+      type: "bar",
+      data: {
+        labels: outstanding.map((r) => `${r.template} ${r.period_key}`),
+        datasets: [{ label: "outstanding", data: outstanding.map((r) => r.outstanding_minor / 100), backgroundColor: App.cssVar("--neg") + "cc", borderWidth: 0 }],
+      },
+      options: { plugins: { legend: { display: false } }, scales: { y: { ticks: { callback: (v) => v.toLocaleString() } } } },
+    });
+  })();
+</script>
