@@ -62,6 +62,22 @@ def test_chartjs_vendored(app_env):
     assert len(r.content) > 100_000, f"chart.umd.js too small: {len(r.content)} bytes"
 
 
+def test_transactions_page_has_categorize_ui(app_env):
+    """The Transactions page must ship the in-UI categorize entry point + modal wiring."""
+    client = _client(app_env)
+    html = client.get("/transactions.html").text
+    assert "cat-btn" in html               # in-cell categorize button hook
+    assert "openCategorizeModal" in html   # modal builder
+    assert "/api/rules" in html            # rule (generalizable) path
+    assert "/categorize" in html           # one-off path
+
+
+def test_app_js_has_post_helper(app_env):
+    client = _client(app_env)
+    js = client.get("/app.js").text
+    assert "App.post" in js
+
+
 def test_no_external_origins(app_env):
     """Offline guarantee: served HTML + app.js reference no non-local origin."""
     client = _client(app_env)

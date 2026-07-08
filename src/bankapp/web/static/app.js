@@ -18,6 +18,29 @@
     }
   };
 
+  // POST JSON to a write route. Surfaces server error detail via the banner and
+  // rethrows so callers can keep the modal open on failure.
+  App.post = async function (path, body) {
+    let res;
+    try {
+      res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+    } catch (err) {
+      App.banner(`Could not reach ${path}: ${err.message}`);
+      throw err;
+    }
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { const j = await res.json(); if (j && j.detail) detail = j.detail; } catch (_) {}
+      App.banner(`${path} failed: ${detail}`);
+      throw new Error(detail);
+    }
+    return await res.json();
+  };
+
   App.banner = function (msg) {
     const main = document.querySelector("main") || document.body;
     const el = document.createElement("div");
@@ -30,6 +53,16 @@
     el.appendChild(span);
     el.appendChild(btn);
     main.insertBefore(el, main.firstChild);
+  };
+
+  // Transient success notice (auto-dismisses). Distinct from the error banner.
+  App.notice = function (msg, ms) {
+    const main = document.querySelector("main") || document.body;
+    const el = document.createElement("div");
+    el.className = "notice-banner";
+    el.textContent = msg;
+    main.insertBefore(el, main.firstChild);
+    setTimeout(() => el.remove(), ms || 3500);
   };
 
   // ---- meta (currencies/exponents, filter options) ------------------------

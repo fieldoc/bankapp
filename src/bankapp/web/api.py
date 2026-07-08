@@ -1,4 +1,5 @@
-"""Read-only JSON API routes. No Pydantic models this slice -- plain dicts."""
+"""JSON API routes. Reads return plain dicts; the two write routes at the bottom
+(categorization) validate their bodies with Pydantic."""
 
 from __future__ import annotations
 
@@ -8,8 +9,10 @@ from datetime import date
 from importlib import metadata
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 
+from bankapp.classify import engine as classify
 from bankapp.report import advisor, analytics, briefs
 from bankapp.web.deps import get_conn
 from bankapp.web.queries import filter_options, receivables_all, transactions_page
@@ -123,3 +126,53 @@ def get_transactions(
 @router.get("/api/receivables")
 def get_receivables(conn: sqlite3.Connection = Depends(get_conn)) -> list:
     return receivables_all(conn)
+
+
+# ---- write routes (categorization) -----------------------------------------
+# The only mutating endpoints. Both go through the classify engine so the DB
+# invariants (rules-first, manual-override semantics) live in one place.
+
+
+class RuleIn(BaseModel):
+    pattern: str
+    kind: str = "substring"
+    category: Optional[str] = None
+    role: Optional[str] = None
+    counterparty: Optional[str] = None
+    priority: int = 100
+
+
+class OneOffIn(BaseModel):
+    category: str
+    role: Optional[str] = None
+    counterparty: Optional[str] = None
+
+
+@router.post("/api/rules")
+def post_rule(body: RuleIn, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    """Add a categorization rule (generalizable) and apply it. Rules added from the
+    UI are tagged source='manual'. Returns whether it was newly added and how many
+    transactions the rule set now categorized."""
+    try:
+        added = classify.add_rule(
+            conn, body.kind, body.pattern, category=body.category, role_hint=body.role,
+            counterparty=body.counterparty, priority=body.priority, source="manual",
+        )
+    except classify.InvalidPatternError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    categorized = classify.categorize(conn)
+    return {"added": added, "categorized": categorized}
+
+
+@router.post("/api/transactions/{raw_txn_id}/categorize")
+def post_one_off(
+    raw_txn_id: int, body: OneOffIn, conn: sqlite3.Connection = Depends(get_conn)
+) -> dict:
+    """Set a one-off manual category for a single transaction (no rule created)."""
+    exists = conn.execute("SELECT 1 FROM raw_txn WHERE id = ?", (raw_txn_id,)).fetchone()
+    if exists is None:
+        raise HTTPException(status_code=404, detail=f"no transaction with id {raw_txn_id}")
+    classify.set_manual_category(
+        conn, raw_txn_id, body.category, role_hint=body.role, counterparty=body.counterparty
+    )
+    return {"ok": True}

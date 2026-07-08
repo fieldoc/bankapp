@@ -36,6 +36,9 @@ _COLUMN_MIGRATIONS = [
     ("recurring_templates", "reimburse_min_minor", "INTEGER NOT NULL DEFAULT 0"),
     ("accounts", "locked", "INTEGER NOT NULL DEFAULT 0"),
     ("recurring_templates", "start_period", "TEXT"),
+    # Manual one-off category overrides set from the UI. DEFAULT 'rule' backfills all
+    # existing (rule-derived) interp rows; only UI one-offs carry 'manual'.
+    ("txn_interp", "source", "TEXT NOT NULL DEFAULT 'rule'"),
 ]
 
 # Views are pure derivations over immutable data, so the cheapest way to keep their

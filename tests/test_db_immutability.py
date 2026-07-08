@@ -99,3 +99,23 @@ def test_start_period_column_backfilled_on_legacy_db():
     cols = {r[1] for r in conn.execute("PRAGMA table_info(recurring_templates)")}
     assert "start_period" in cols
     dbmod.apply_schema(conn)
+
+
+def test_txn_interp_source_column_backfilled_on_legacy_db():
+    # A pre-source DB: drop the column and confirm apply_schema re-adds it with the
+    # 'rule' default, so existing interp rows are treated as rule-derived (not manual).
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    dbmod.apply_schema(conn)
+    acct = insert_account(conn)
+    tid = insert_raw_txn(conn, acct)
+    conn.execute(
+        "INSERT INTO txn_interp(raw_txn_id, category, updated_at) VALUES (?, 'groceries', 't')",
+        (tid,),
+    )
+    conn.execute("ALTER TABLE txn_interp DROP COLUMN source")
+    dbmod.apply_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(txn_interp)")}
+    assert "source" in cols
+    assert conn.execute("SELECT source FROM txn_interp WHERE raw_txn_id = ?", (tid,)).fetchone()[0] == "rule"
+    dbmod.apply_schema(conn)

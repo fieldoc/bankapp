@@ -35,7 +35,7 @@
 <script>
   (async function () {
     await App.nav();
-    const meta = await App.loadMeta();
+    let meta = await App.loadMeta();
     App.chartTheme();
     let page = 1;
     let spendChart = null;
@@ -106,12 +106,15 @@
           ? `<span class="strike">${App.fmtMoney(t.amount_minor, t.currency)}</span> <span class="muted">0.00</span>`
           : moneyCell(t.effective_minor, t.currency);
         const roleBadge = t.group_role ? `<span class="badge role">${App.esc(t.group_role)}</span>` : "";
+        const catCell = t.category === "(uncategorized)"
+          ? `<button class="btn mini cat-btn" data-id="${t.id}" data-desc="${App.esc(t.description_norm)}">＋ categorize</button>`
+          : App.esc(t.category);
         rows +=
           `<tr class="${cls}">` +
           `<td>${App.esc(t.posted_date)}</td>` +
           `<td>${App.esc(t.account_key)}</td>` +
           `<td class="desc">${App.esc(t.description_norm)} ${roleBadge}</td>` +
-          `<td>${App.esc(t.category)}</td>` +
+          `<td>${catCell}</td>` +
           `<td class="num">${amtCell}</td>` +
           `</tr>`;
       }
@@ -160,6 +163,159 @@
         },
         options: { plugins: { legend: { position: "right" } } },
       });
+    }
+
+    // ---- categorize modal ---------------------------------------------------
+    const categories = () => (meta.categories || []).filter((c) => c !== "(uncategorized)");
+
+    // Delegated click: the panel element persists across re-renders; the buttons
+    // inside it don't, so listen on the panel and match .cat-btn.
+    App.el("tx-panel").addEventListener("click", (e) => {
+      const btn = e.target.closest(".cat-btn");
+      if (btn) openCategorizeModal(Number(btn.dataset.id), btn.dataset.desc || "");
+    });
+
+    function openCategorizeModal(id, desc) {
+      const overlay = document.createElement("div");
+      overlay.className = "modal";
+      const card = document.createElement("div");
+      card.className = "modal-card";
+      overlay.appendChild(card);
+
+      const title = document.createElement("h3");
+      title.textContent = "Categorize transaction";
+      const sub = document.createElement("p");
+      sub.className = "modal-desc";
+      sub.textContent = desc;
+      card.appendChild(title);
+      card.appendChild(sub);
+
+      // Category input + datalist
+      const catFld = document.createElement("div");
+      catFld.className = "fld";
+      const catLbl = document.createElement("label");
+      catLbl.textContent = "Category";
+      const catInput = document.createElement("input");
+      catInput.setAttribute("list", "cat-options");
+      catInput.placeholder = "e.g. groceries";
+      const dl = document.createElement("datalist");
+      dl.id = "cat-options";
+      for (const c of categories()) {
+        const o = document.createElement("option");
+        o.value = c;
+        dl.appendChild(o);
+      }
+      catFld.appendChild(catLbl);
+      catFld.appendChild(catInput);
+      catFld.appendChild(dl);
+      card.appendChild(catFld);
+
+      // Apply-to radios
+      const scopeFld = document.createElement("div");
+      scopeFld.className = "fld";
+      const scopeLbl = document.createElement("label");
+      scopeLbl.textContent = "Apply to";
+      const radios = document.createElement("div");
+      radios.className = "radios";
+      const ruleWrap = document.createElement("label");
+      const ruleRadio = document.createElement("input");
+      ruleRadio.type = "radio"; ruleRadio.name = "scope"; ruleRadio.value = "rule"; ruleRadio.checked = true;
+      ruleWrap.appendChild(ruleRadio);
+      ruleWrap.appendChild(document.createTextNode("All matching (rule)"));
+      const onceWrap = document.createElement("label");
+      const onceRadio = document.createElement("input");
+      onceRadio.type = "radio"; onceRadio.name = "scope"; onceRadio.value = "once";
+      onceWrap.appendChild(onceRadio);
+      onceWrap.appendChild(document.createTextNode("Just this transaction"));
+      radios.appendChild(ruleWrap);
+      radios.appendChild(onceWrap);
+      scopeFld.appendChild(scopeLbl);
+      scopeFld.appendChild(radios);
+      card.appendChild(scopeFld);
+
+      // Pattern (rule mode only)
+      const patFld = document.createElement("div");
+      patFld.className = "fld";
+      const patLbl = document.createElement("label");
+      patLbl.textContent = "Pattern";
+      const patInput = document.createElement("input");
+      patInput.value = desc;
+      const patHint = document.createElement("div");
+      patHint.className = "hint";
+      patHint.textContent = "Matches any description containing this text (case-insensitive).";
+      patFld.appendChild(patLbl);
+      patFld.appendChild(patInput);
+      patFld.appendChild(patHint);
+      card.appendChild(patFld);
+
+      // Role (optional)
+      const roleFld = document.createElement("div");
+      roleFld.className = "fld";
+      const roleLbl = document.createElement("label");
+      roleLbl.textContent = "Role (optional)";
+      const roleSel = document.createElement("select");
+      for (const [v, t] of [["", "— none —"], ["transfer", "transfer"], ["reimbursement", "reimbursement"], ["expense", "expense"], ["income", "income"]]) {
+        const o = document.createElement("option");
+        o.value = v; o.textContent = t;
+        roleSel.appendChild(o);
+      }
+      roleFld.appendChild(roleLbl);
+      roleFld.appendChild(roleSel);
+      card.appendChild(roleFld);
+
+      const toggleScope = () => { patFld.style.display = ruleRadio.checked ? "flex" : "none"; };
+      ruleRadio.onchange = toggleScope;
+      onceRadio.onchange = toggleScope;
+      toggleScope();
+
+      // Actions
+      const actions = document.createElement("div");
+      actions.className = "modal-actions";
+      const cancel = document.createElement("button");
+      cancel.className = "btn ghost"; cancel.textContent = "Cancel";
+      const save = document.createElement("button");
+      save.className = "btn"; save.textContent = "Save";
+      actions.appendChild(cancel);
+      actions.appendChild(save);
+      card.appendChild(actions);
+
+      const close = () => overlay.remove();
+      cancel.onclick = close;
+      overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
+      document.addEventListener("keydown", function esc(ev) {
+        if (ev.key === "Escape") { close(); document.removeEventListener("keydown", esc); }
+      });
+
+      save.onclick = async () => {
+        const category = catInput.value.trim();
+        const role = roleSel.value || null;
+        if (!category && !role) { App.banner("Enter a category (or pick a role)."); return; }
+        save.disabled = true;
+        try {
+          if (ruleRadio.checked) {
+            const pattern = patInput.value.trim();
+            if (!pattern) { App.banner("Pattern can't be empty for a rule."); save.disabled = false; return; }
+            const res = await App.post("/api/rules", { kind: "substring", pattern, category: category || null, role });
+            App.notice(res.added
+              ? `Rule added — categorized ${res.categorized} transaction(s).`
+              : `Rule already existed — categorized ${res.categorized} transaction(s).`);
+          } else {
+            if (!category) { App.banner("A one-off needs a category."); save.disabled = false; return; }
+            await App.post(`/api/transactions/${id}/categorize`, { category, role });
+            App.notice("Transaction categorized.");
+          }
+          close();
+          App.meta = null;                 // categories may have grown
+          meta = await App.loadMeta();
+          fillSelect("f-category", meta.categories, "All categories");
+          load();
+        } catch (_) {
+          save.disabled = false;           // App.post already surfaced the error
+        }
+      };
+
+      document.body.appendChild(overlay);
+      catInput.focus();
     }
 
     App.el("apply").onclick = () => { page = 1; load(); };

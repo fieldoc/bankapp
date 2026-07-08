@@ -60,6 +60,9 @@ CREATE TABLE IF NOT EXISTS txn_interp (
   raw_txn_id INTEGER PRIMARY KEY REFERENCES raw_txn(id),
   category TEXT, role_hint TEXT, counterparty TEXT,
   rule_id INTEGER REFERENCES rules(id),
+  -- 'rule' = derived from a rule by categorize(); 'manual' = a one-off override set in
+  -- the UI. Manual rows win over rules and survive `categorize --all` (see engine.py).
+  source TEXT NOT NULL DEFAULT 'rule' CHECK (source IN ('rule','manual')),
   updated_at TEXT NOT NULL
 );
 

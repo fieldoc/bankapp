@@ -1,6 +1,7 @@
 """FastAPI app factory + local-only server entrypoint.
 
-Binds 127.0.0.1 only. Read-only on data: this layer never writes to the DB.
+Binds 127.0.0.1 only. Mostly read-only; the two categorization POST routes in api.py
+are the sole write path, and they go through the classify engine.
 """
 
 from __future__ import annotations

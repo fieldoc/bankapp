@@ -111,16 +111,47 @@ def upsert_seed_rules(conn: sqlite3.Connection, seed_patterns) -> int:
     return added
 
 
+def set_manual_category(
+    conn: sqlite3.Connection,
+    raw_txn_id: int,
+    category: str,
+    role_hint: Optional[str] = None,
+    counterparty: Optional[str] = None,
+) -> None:
+    """Set a one-off manual category override for a single txn (no rule created).
+
+    Marked source='manual' so it wins over rules and survives `categorize --all`
+    (see categorize()). Upserts the txn_interp row and clears any prior rule_id.
+    """
+    with conn:
+        conn.execute(
+            """INSERT INTO txn_interp(raw_txn_id, category, role_hint, counterparty,
+                                      rule_id, source, updated_at)
+               VALUES (?,?,?,?,NULL,'manual',?)
+               ON CONFLICT(raw_txn_id) DO UPDATE SET
+                 category=excluded.category, role_hint=excluded.role_hint,
+                 counterparty=excluded.counterparty, rule_id=NULL,
+                 source='manual', updated_at=excluded.updated_at""",
+            (raw_txn_id, category, role_hint, counterparty, _utc_now_iso()),
+        )
+
+
 def categorize(conn: sqlite3.Connection, recompute_all: bool = False) -> int:
     """Apply rules to raw_txn, writing verdicts to txn_interp. Idempotent.
 
     Default: only txns with no txn_interp row yet. `recompute_all`: re-evaluate every
     txn against the current rules (safe — interpretation only; raw_txn is never touched)
     and drop rows that no longer match. Returns the number of txns categorized.
+
+    Manual overrides (source='manual', set via set_manual_category) are never touched:
+    they win over rules and survive --all.
     """
     engine = RuleEngine(load_rules(conn))
     if recompute_all:
-        rows = conn.execute("SELECT id, description_norm FROM raw_txn").fetchall()
+        rows = conn.execute(
+            """SELECT id, description_norm FROM raw_txn
+               WHERE id NOT IN (SELECT raw_txn_id FROM txn_interp WHERE source='manual')"""
+        ).fetchall()
     else:
         rows = conn.execute(
             """SELECT r.id, r.description_norm

@@ -1,4 +1,5 @@
-"""FastAPI dependencies. Read-only: opens a per-request connection and closes it."""
+"""FastAPI dependencies: opens a per-request connection and closes it. Most routes
+only read; the categorization POST routes write through the classify engine."""
 
 from __future__ import annotations
 

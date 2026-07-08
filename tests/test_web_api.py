@@ -496,6 +496,86 @@ def test_filter_options_includes_account_currency_without_txns(app_env):
     assert currencies["BTC"] == 8  # money.exponent_for('BTC')
 
 
+# ---- write routes: categorization -----------------------------------------
+
+def _seed_uncategorized(app_env):
+    dbmod.init_db(app_env["db"])
+    conn = dbmod.connect(app_env["db"])
+    aid = insert_account(conn, key="td-chequing", currency="CAD")
+    ids = [
+        insert_raw_txn(conn, aid, posted_date="2026-04-01", amount_minor=-500, currency="CAD",
+                       description_raw="STARBUCKS #1", description_norm="starbucks #1", dedup_key="sha256:s1"),
+        insert_raw_txn(conn, aid, posted_date="2026-04-02", amount_minor=-600, currency="CAD",
+                       description_raw="STARBUCKS #2", description_norm="starbucks #2", dedup_key="sha256:s2"),
+        insert_raw_txn(conn, aid, posted_date="2026-04-03", amount_minor=-700, currency="CAD",
+                       description_raw="ONE OFF VENDOR", description_norm="one off vendor", dedup_key="sha256:o1"),
+    ]
+    conn.commit()
+    conn.close()
+    return ids
+
+
+def test_post_rule_categorizes_matching_txns(app_env):
+    ids = _seed_uncategorized(app_env)
+    client = _client(app_env)
+
+    r = client.post("/api/rules", json={"pattern": "starbucks", "category": "coffee"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["added"] is True
+    assert body["categorized"] == 2  # both starbucks rows, not the one-off vendor
+
+    # the rule now shows as source='manual' (added from the UI)
+    conn = dbmod.connect(app_env["db"])
+    src = conn.execute("SELECT source FROM rules WHERE pattern = 'starbucks'").fetchone()[0]
+    conn.close()
+    assert src == "manual"
+
+    # the matched rows are no longer under (uncategorized)
+    got = client.get("/api/transactions?category=coffee").json()
+    assert got["total"] == 2
+
+    # duplicate pattern -> added=false, still idempotently categorizes
+    r2 = client.post("/api/rules", json={"pattern": "starbucks", "category": "coffee"})
+    assert r2.status_code == 200
+    assert r2.json()["added"] is False
+
+
+def test_post_rule_invalid_regex_400(app_env):
+    _seed_uncategorized(app_env)
+    client = _client(app_env)
+    r = client.post("/api/rules", json={"kind": "regex", "pattern": "([bad", "category": "x"})
+    assert r.status_code == 400
+
+
+def test_post_one_off_categorizes_single_txn(app_env):
+    ids = _seed_uncategorized(app_env)
+    one_off_id = ids[2]
+    client = _client(app_env)
+
+    before = client.get("/api/status").json()["uncategorized"]
+    assert before == 3
+
+    r = client.post(f"/api/transactions/{one_off_id}/categorize", json={"category": "misc"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+    after = client.get("/api/status").json()["uncategorized"]
+    assert after == 2  # only the one-off left the queue
+
+    # the two starbucks rows are untouched (no rule was created)
+    got = client.get("/api/transactions?category=misc").json()
+    assert got["total"] == 1
+    assert got["items"][0]["description_norm"] == "one off vendor"
+
+
+def test_post_one_off_unknown_id_404(app_env):
+    _seed_uncategorized(app_env)
+    client = _client(app_env)
+    r = client.post("/api/transactions/999999/categorize", json={"category": "misc"})
+    assert r.status_code == 404
+
+
 def test_serve_busy_port_prints_friendly_message_and_exits_1(app_env, capsys):
     """A busy port must yield a friendly ASCII message + exit code 1, not a raw
     uvicorn traceback / exit 3 (Part-B finding #1)."""
