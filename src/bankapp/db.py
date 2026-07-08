@@ -35,6 +35,7 @@ def connect(path: Union[str, Path], check_same_thread: bool = True) -> sqlite3.C
 _COLUMN_MIGRATIONS = [
     ("recurring_templates", "reimburse_min_minor", "INTEGER NOT NULL DEFAULT 0"),
     ("accounts", "locked", "INTEGER NOT NULL DEFAULT 0"),
+    ("recurring_templates", "start_period", "TEXT"),
 ]
 
 # Views are pure derivations over immutable data, so the cheapest way to keep their

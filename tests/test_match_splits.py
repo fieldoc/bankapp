@@ -370,3 +370,76 @@ def test_self_transfer_inflow_never_claimed_as_reimbursement(conn):
            WHERE gm.role='reimbursement'"""
     )]
     assert claimed == ["roomie1"]
+
+
+# ---- start_period: template terms began here; earlier history is not tracked ----
+
+RENT_FROM_JAN = dataclasses.replace(RENT, start_period="2026-01")
+
+
+def test_start_period_skips_prior_periods(rent_db):
+    conn, ids = rent_db
+    splits.upsert_templates(conn, [RENT_FROM_JAN])
+    _expense(conn, ids["ws-cash"], date_s="2025-11-01", dedup="e_nov")
+    _expense(conn, ids["ws-cash"], date_s="2025-12-01", dedup="e_dec")
+    _expense(conn, ids["ws-cash"], dedup="e_jan")  # 2026-01-01
+    splits.match_splits(conn, today=date(2026, 1, 15))
+    periods = [r[0] for r in conn.execute("SELECT period_key FROM groups ORDER BY period_key")]
+    assert periods == ["2026-01"]  # boundary month tracked; prior months not judged
+
+
+def test_start_period_rederive_clears_prestart_groups(rent_db):
+    conn, ids = rent_db
+    _expense(conn, ids["ws-cash"], date_s="2025-11-01", dedup="e_nov")
+    _expense(conn, ids["ws-cash"], dedup="e_jan")
+    splits.match_splits(conn, today=date(2026, 1, 15))
+    assert conn.execute("SELECT COUNT(*) FROM groups").fetchone()[0] == 3  # 2025-11..2026-01
+    # terms declared to begin 2026-01 after the fact -> re-derive drops old periods
+    splits.upsert_templates(conn, [RENT_FROM_JAN])
+    splits.match_splits(conn, today=date(2026, 1, 15))
+    periods = [r[0] for r in conn.execute("SELECT period_key FROM groups ORDER BY period_key")]
+    assert periods == ["2026-01"]
+
+
+def test_prestart_legs_follow_ungrouped_cashflow(rent_db):
+    conn, ids = rent_db
+    splits.upsert_templates(conn, [RENT_FROM_JAN])
+    _expense(conn, ids["ws-cash"], date_s="2025-11-01", dedup="e_nov")
+    reimb = _reimb(conn, ids["td-chequing"], date_s="2025-11-03", dedup="r_nov")
+    conn.execute(
+        "INSERT INTO txn_interp(raw_txn_id, role_hint, updated_at) VALUES (?,'reimbursement','t')",
+        (reimb,),
+    )
+    splits.match_splits(conn, today=date(2026, 1, 15))
+    # neither leg grouped -> expense counts in full, reimbursement offsets spend
+    row = conn.execute(
+        "SELECT spend_minor, income_minor FROM v_monthly_cashflow WHERE month='2025-11'"
+    ).fetchone()
+    assert row["spend_minor"] == 240000 - 120000
+    assert row["income_minor"] == 0
+
+
+def test_start_period_walls_off_lookback_window(rent_db):
+    """A pre-start payment inside the first tracked period's 14-day lookback
+    window must NOT be claimed — it belongs to the old arrangement."""
+    conn, ids = rent_db
+    splits.upsert_templates(conn, [RENT_FROM_JAN])
+    _expense(conn, ids["ws-cash"], dedup="e_jan")  # 2026-01-01
+    # old-arrangement money, dated inside lo=2025-12-18..hi window of 2026-01
+    _reimb(conn, ids["td-chequing"], date_s="2025-12-20", dedup="r_dec")
+    splits.match_splits(conn, today=date(2026, 1, 15))
+    n = conn.execute("SELECT COUNT(*) FROM group_members WHERE role='reimbursement'").fetchone()[0]
+    assert n == 0
+    assert conn.execute(
+        "SELECT status FROM groups WHERE period_key='2026-01'"
+    ).fetchone()["status"] == "open"  # still inside the window, awaiting real payment
+
+
+def test_malformed_db_start_period_fails_with_template_name(rent_db):
+    """The DB column is plain TEXT; a value that bypassed config validation must
+    fail loudly naming the template, not crash on a bare int()."""
+    conn, ids = rent_db
+    splits.upsert_templates(conn, [dataclasses.replace(RENT, start_period="2026")])
+    _expense(conn, ids["ws-cash"])
+    with pytest.raises(ValueError, match="'rent'.*start_period"):
+        splits.match_splits(conn, today=date(2026, 1, 15))

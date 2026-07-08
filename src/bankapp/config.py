@@ -77,6 +77,10 @@ class TemplateConfig:
     # anonymizes e-transfer senders (TD via Plaid: 'e-transfer ***kgt'), making the
     # pattern too broad — the amount becomes the discriminating signal. 0 = no gate.
     reimburse_min_minor: int = 0
+    # 'YYYY-MM' month the template's terms began; periods before it are neither
+    # generated nor tracked (the template shouldn't judge history that predates
+    # the current arrangement — e.g. a rent split that used to be 3-way).
+    start_period: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,14 @@ def resolve_config_path() -> Path:
 def _parse_share(s: str) -> tuple[int, int]:
     numer, _, denom = s.partition("/")
     return int(numer.strip()), int(denom.strip())
+
+
+def _parse_period(s: str) -> str:
+    """Validate a 'YYYY-MM' period key (the format period_key comparisons rely on)."""
+    y, sep, m = str(s).partition("-")
+    if sep and len(y) == 4 and y.isdigit() and len(m) == 2 and m.isdigit() and 1 <= int(m) <= 12:
+        return f"{y}-{m}"
+    raise ValueError(f"template start_period must be 'YYYY-MM', got {s!r}")
 
 
 def _expand(p: str) -> Path:
@@ -234,4 +246,5 @@ def _parse_template(t: dict) -> TemplateConfig:
         link_transfer=bool(t.get("link_transfer", True)),
         cadence=t.get("cadence", "monthly"),
         reimburse_min_minor=money.to_minor(t.get("reimburse_min_amount", "0.00"), currency),
+        start_period=_parse_period(t["start_period"]) if t.get("start_period") else None,
     )

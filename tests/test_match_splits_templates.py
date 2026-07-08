@@ -40,3 +40,11 @@ def test_upsert_from_example_config(conn):
     cfg = configmod.load_config(FIXTURES.parent.parent / "config.example.toml")
     splits.upsert_templates(conn, cfg.templates)
     assert splits.load_templates(conn)[0].name == "rent"
+
+
+def test_start_period_roundtrip_and_unset_clears(conn):
+    splits.upsert_templates(conn, [_rent_template(start_period="2026-01")])
+    assert splits.load_templates(conn)[0].start_period == "2026-01"
+    # removing it from config clears the stored value on the next upsert
+    splits.upsert_templates(conn, [_rent_template()])
+    assert splits.load_templates(conn)[0].start_period is None

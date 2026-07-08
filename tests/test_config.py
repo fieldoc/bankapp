@@ -112,3 +112,37 @@ def test_template_reimburse_account_string_still_works():
         "reimburse_account": "td-chequing", "reimburser_pattern": "e-transfer",
     })
     assert t.reimburse_account == "td-chequing"
+
+
+_TEMPLATE_BASE = {
+    "name": "rent", "kind": "split_expense", "expected_amount": "2199.00",
+    "share": "1/2", "expense_account": "ws-cash", "expense_pattern": "uncle pete",
+    "reimburse_account": "td-chequing", "reimburser_pattern": "e-transfer",
+}
+
+
+def test_template_start_period_parsed():
+    from bankapp.config import _parse_template
+
+    t = _parse_template({**_TEMPLATE_BASE, "start_period": "2026-01"})
+    assert t.start_period == "2026-01"
+
+
+def test_template_start_period_defaults_none():
+    from bankapp.config import _parse_template
+
+    assert _parse_template(dict(_TEMPLATE_BASE)).start_period is None
+
+
+@pytest.mark.parametrize("bad", ["2026-1", "Jan 2026", "2026-13", "202601", "2026-00"])
+def test_template_start_period_invalid_raises(bad):
+    from bankapp.config import _parse_template
+
+    with pytest.raises(ValueError, match="start_period"):
+        _parse_template({**_TEMPLATE_BASE, "start_period": bad})
+
+
+def test_template_start_period_empty_string_means_unset():
+    from bankapp.config import _parse_template
+
+    assert _parse_template({**_TEMPLATE_BASE, "start_period": ""}).start_period is None

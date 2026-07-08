@@ -86,3 +86,16 @@ def test_connect_sets_foreign_keys_on(db_path):
     c = dbmod.connect(db_path)
     assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     c.close()
+
+
+def test_start_period_column_backfilled_on_legacy_db():
+    # Simulate a pre-start_period DB: drop the column, then apply_schema's guarded
+    # ALTER must re-add it (and applying again is a no-op).
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    dbmod.apply_schema(conn)
+    conn.execute("ALTER TABLE recurring_templates DROP COLUMN start_period")
+    dbmod.apply_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(recurring_templates)")}
+    assert "start_period" in cols
+    dbmod.apply_schema(conn)

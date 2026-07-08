@@ -1,8 +1,9 @@
 """Split-expense / receivables matching: the 3-leg rent chain.
 
-Per active template, per period (first-txn month -> today), each run lazily ensures a
-group and attaches: the expense leg (with my floored share), the optional TD->WS
-transfer pair, and reimbursement inflows (AR-lite, FIFO to the oldest unsettled period
+Per active template, per period (first-txn month -> today, clamped to the template's
+optional start_period), each run lazily ensures a group and attaches: the expense leg
+(with my floored share), the optional TD->WS transfer pair, and reimbursement inflows
+(AR-lite, FIFO to the oldest unsettled period
 across month boundaries). Status is recomputed every run from the current members, so
 there is no stored state machine to corrupt. Everything is idempotent: UNIQUE(template,
 period) and UNIQUE(raw_txn_id) keep re-runs no-ops.
@@ -21,6 +22,7 @@ from datetime import date, timedelta
 from typing import Optional
 
 from bankapp import money
+from bankapp.config import _parse_period
 from bankapp.ingest.core import _utc_now_iso
 
 MISSING_EXPENSE_GRACE_DAYS = 7
@@ -44,6 +46,7 @@ class Template:
     window_days: int
     link_transfer: int
     reimburse_min_minor: int = 0
+    start_period: Optional[str] = None  # 'YYYY-MM'; periods before this are not tracked
 
 
 # ---- T6.1 template upsert ---------------------------------------------------
@@ -58,8 +61,9 @@ def upsert_templates(conn: sqlite3.Connection, templates) -> int:
                      (name, kind, expected_amount_minor, currency, cadence,
                       share_numer, share_denom, expense_account, expense_pattern,
                       reimburse_account, reimburser_pattern, amount_tolerance_minor,
-                      day_of_month, window_days, link_transfer, reimburse_min_minor, active)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)
+                      day_of_month, window_days, link_transfer, reimburse_min_minor,
+                      start_period, active)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)
                    ON CONFLICT(name) DO UPDATE SET
                      kind=excluded.kind, expected_amount_minor=excluded.expected_amount_minor,
                      currency=excluded.currency, cadence=excluded.cadence,
@@ -70,13 +74,15 @@ def upsert_templates(conn: sqlite3.Connection, templates) -> int:
                      amount_tolerance_minor=excluded.amount_tolerance_minor,
                      day_of_month=excluded.day_of_month, window_days=excluded.window_days,
                      link_transfer=excluded.link_transfer,
-                     reimburse_min_minor=excluded.reimburse_min_minor""",
+                     reimburse_min_minor=excluded.reimburse_min_minor,
+                     start_period=excluded.start_period""",
                 (
                     t.name, t.kind, t.expected_amount_minor, t.currency, t.cadence,
                     t.share_numer, t.share_denom, t.expense_account, t.expense_pattern,
                     t.reimburse_account, t.reimburser_pattern, t.amount_tolerance_minor,
                     t.day_of_month, t.window_days, int(t.link_transfer),
                     getattr(t, "reimburse_min_minor", 0),
+                    getattr(t, "start_period", None),
                 ),
             )
             n += 1
@@ -88,7 +94,7 @@ def load_templates(conn: sqlite3.Connection) -> list[Template]:
         """SELECT id, name, expected_amount_minor, currency, share_numer, share_denom,
                   expense_account, expense_pattern, reimburse_account, reimburser_pattern,
                   amount_tolerance_minor, day_of_month, window_days, link_transfer,
-                  reimburse_min_minor
+                  reimburse_min_minor, start_period
            FROM recurring_templates WHERE active = 1 AND kind = 'split_expense'"""
     ).fetchall()
     return [
@@ -99,7 +105,7 @@ def load_templates(conn: sqlite3.Connection) -> list[Template]:
             reimburse_account=r["reimburse_account"], reimburser_pattern=r["reimburser_pattern"],
             amount_tolerance_minor=r["amount_tolerance_minor"], day_of_month=r["day_of_month"],
             window_days=r["window_days"], link_transfer=r["link_transfer"],
-            reimburse_min_minor=r["reimburse_min_minor"],
+            reimburse_min_minor=r["reimburse_min_minor"], start_period=r["start_period"],
         )
         for r in rows
     ]
@@ -125,6 +131,19 @@ def _compile(pattern: str):
         return re.compile(pattern, re.IGNORECASE)
     except re.error:
         return re.compile(re.escape(pattern), re.IGNORECASE)
+
+
+def _start_month(tmpl: Template) -> Optional[date]:
+    """tmpl.start_period as a first-of-month date. Re-validated here (not just at
+    config parse) because the DB column is plain TEXT and load_templates trusts it —
+    a malformed stored value must fail with a nameable template, not a bare int()."""
+    if not tmpl.start_period:
+        return None
+    try:
+        pk = _parse_period(tmpl.start_period)
+    except ValueError as e:
+        raise ValueError(f"template {tmpl.name!r}: {e}") from e
+    return date(int(pk[:4]), int(pk[5:7]), 1)
 
 
 # ---- T6.2 period + expense leg + share -------------------------------------
@@ -280,6 +299,13 @@ def _match_reimbursements(conn, tmpl: Template, reimb_acct_ids: list[int]) -> No
         r for r in rows
         if pat.search(r["description_norm"]) and r["amount_minor"] >= tmpl.reimburse_min_minor
     ]
+    start_month = _start_month(tmpl)
+    if start_month:
+        # Money paid before the template's terms began belongs to the old
+        # arrangement — never claim it for a tracked period, even when the first
+        # period's lookback window reaches across the start boundary.
+        floor = start_month.isoformat()
+        candidates = [r for r in candidates if r["posted_date"] >= floor]
 
     # period groups of this template, oldest first
     groups = conn.execute(
@@ -387,6 +413,9 @@ def _process_template(conn, tmpl: Template, acct_ids, today: date, now: str) -> 
         return 0
 
     start = date.fromisoformat(row["m"]).replace(day=1)
+    start_month = _start_month(tmpl)  # template terms began here; earlier history is not ours to judge
+    if start_month:
+        start = max(start, start_month)
     end = today.replace(day=1)
 
     periods: list[tuple[str, date]] = []
