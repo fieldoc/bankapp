@@ -32,6 +32,24 @@ def test_recompute_all_applies_new_rule(conn):
     assert review.count(conn) == 0
 
 
+def test_recompute_all_reassigns_to_more_specific_rule(conn):
+    """A newer, longer pattern at the same priority steals the txn from an older
+    generic one on recompute (specificity tie-break, DB-level)."""
+    acct = insert_account(conn)
+    tid = _txn(conn, acct, "uber eats toronto", "sha256:1")
+    engine.add_rule(conn, "substring", "uber", "transport")  # lower id, generic
+    engine.categorize(conn)
+    assert conn.execute(
+        "SELECT category FROM txn_interp WHERE raw_txn_id=?", (tid,)
+    ).fetchone()[0] == "transport"
+
+    engine.add_rule(conn, "substring", "uber eats", "dining")  # higher id, specific
+    engine.categorize(conn, recompute_all=True)
+    assert conn.execute(
+        "SELECT category FROM txn_interp WHERE raw_txn_id=?", (tid,)
+    ).fetchone()[0] == "dining"
+
+
 def test_recompute_all_drops_stale_interp(conn):
     acct = insert_account(conn)
     tid = _txn(conn, acct, "mystery merchant", "sha256:1")

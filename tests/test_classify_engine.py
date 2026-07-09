@@ -32,9 +32,31 @@ def test_first_match_by_priority_then_id():
 def test_priority_tie_breaks_on_id():
     rules = [
         _r(5, "substring", "foo", "b", prio=100),
-        _r(3, "substring", "foo", "a", prio=100),  # same priority, lower id wins
+        _r(3, "substring", "foo", "a", prio=100),  # same priority + length, lower id wins
     ]
     assert engine.RuleEngine(rules).match("foobar").category == "a"
+
+
+def test_equal_priority_longer_pattern_wins():
+    """At equal priority a more specific (longer) pattern wins, even when the
+    generic pattern has the LOWER id (was inserted first)."""
+    rules = [
+        _r(1, "substring", "uber", "transport", prio=100),    # generic, older
+        _r(9, "substring", "uber eats", "dining", prio=100),  # specific, newer
+    ]
+    eng = engine.RuleEngine(rules)
+    assert eng.match("uber eats toronto").category == "dining"
+    assert eng.match("uber trip 123").category == "transport"
+
+
+def test_priority_still_dominates_pattern_length():
+    """Priority beats specificity: a short lower-priority-number pattern wins over
+    a longer higher-priority-number one."""
+    rules = [
+        _r(1, "substring", "uber eats toronto on", "dining", prio=100),
+        _r(2, "substring", "uber", "transport", prio=50),  # lower number wins
+    ]
+    assert engine.RuleEngine(rules).match("uber eats toronto on").category == "transport"
 
 
 def test_validate_rejects_bad_regex():
@@ -59,6 +81,56 @@ def test_add_rule_stores_lowercase_and_dedups(conn):
 def test_add_rule_invalid_regex_raises(conn):
     with pytest.raises(engine.InvalidPatternError):
         engine.add_rule(conn, "regex", "([bad")
+
+
+# ---- add_rule normalization ------------------------------------------------
+
+def test_add_rule_regex_not_lowercased(conn):
+    r"""Lowercasing a regex corrupts escapes (\D -> \d flips meaning, [A-Z] -> [a-z]).
+    Regex patterns must be stored exactly as authored."""
+    assert engine.add_rule(conn, "regex", r"CHV\D+\d{4}", "fees") is True
+    stored = conn.execute("SELECT pattern FROM rules").fetchone()[0]
+    assert stored == r"CHV\D+\d{4}"
+
+
+def test_regex_rules_match_case_insensitively(conn):
+    """description_norm is always lowercase; an upper-case-authored regex must still
+    match it (compiled with re.IGNORECASE)."""
+    eng = engine.RuleEngine([_r(1, "regex", r"CHV\d+", "fees")])
+    assert eng.match("chv12345 payment").category == "fees"
+
+
+def test_existing_lowercase_regex_behaves_identically(conn):
+    """The stored live regex chv\\d+ (already lowercase) must keep matching."""
+    eng = engine.RuleEngine([_r(1, "regex", r"chv\d+", "fees")])
+    assert eng.match("chv12345 payment").category == "fees"
+    assert eng.match("chv payment") is None
+
+
+def test_add_rule_substring_collapses_internal_whitespace(conn):
+    """description_norm never contains double spaces, so a double-space pattern could
+    never match; internal runs collapse to a single space."""
+    assert engine.add_rule(conn, "substring", "uber   eats", "dining") is True
+    stored = conn.execute("SELECT pattern FROM rules").fetchone()[0]
+    assert stored == "uber eats"
+
+
+def test_add_rule_substring_preserves_leading_trailing_space(conn):
+    """A single leading/trailing space is a deliberate word-boundary guard
+    (e.g. 'pho ' must not match 'phone') and must survive storage."""
+    assert engine.add_rule(conn, "substring", "pho ", "dining") is True
+    stored = conn.execute("SELECT pattern FROM rules").fetchone()[0]
+    assert stored == "pho "
+    eng = engine.RuleEngine(engine.load_rules(conn))
+    assert eng.match("pho house on main").category == "dining"
+    assert eng.match("phone bill") is None
+
+
+def test_add_rule_rejects_empty_and_whitespace_only_patterns(conn):
+    with pytest.raises(engine.InvalidPatternError):
+        engine.add_rule(conn, "substring", "")
+    with pytest.raises(engine.InvalidPatternError):
+        engine.add_rule(conn, "substring", "   ")
 
 
 def test_upsert_seed_rules(conn):

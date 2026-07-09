@@ -150,9 +150,13 @@ class OneOffIn(BaseModel):
 
 @router.post("/api/rules")
 def post_rule(body: RuleIn, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
-    """Add a categorization rule (generalizable) and apply it. Rules added from the
-    UI are tagged source='manual'. Returns whether it was newly added and how many
-    transactions the rule set now categorized."""
+    """Add a categorization rule (generalizable) and apply it to ALL history. Rules
+    added from the UI are tagged source='manual'. Runs the recompute-all path so a
+    new, more specific rule can steal rows an older rule already claimed; manual
+    one-off overrides are never touched.
+
+    `categorized` = total transactions now categorized by the whole rule set after
+    the recompute (not just the new rule's matches)."""
     try:
         added = classify.add_rule(
             conn, body.kind, body.pattern, category=body.category, role_hint=body.role,
@@ -160,7 +164,7 @@ def post_rule(body: RuleIn, conn: sqlite3.Connection = Depends(get_conn)) -> dic
         )
     except classify.InvalidPatternError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    categorized = classify.categorize(conn)
+    categorized = classify.categorize(conn, recompute_all=True)
     return {"added": added, "categorized": categorized}
 
 

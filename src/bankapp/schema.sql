@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS rules (
   category TEXT,
   role_hint TEXT CHECK (role_hint IN ('transfer','reimbursement','expense','income') OR role_hint IS NULL),
   counterparty TEXT,
-  priority INTEGER NOT NULL DEFAULT 100,    -- lower wins
+  priority INTEGER NOT NULL DEFAULT 100,    -- lower wins; ties: longer pattern first, then lower id
   source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','claude','seed')),
   created_at TEXT NOT NULL,
   UNIQUE (match_kind, pattern)

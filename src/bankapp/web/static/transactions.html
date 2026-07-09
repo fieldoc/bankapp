@@ -293,12 +293,12 @@
         save.disabled = true;
         try {
           if (ruleRadio.checked) {
-            const pattern = patInput.value.trim();
-            if (!pattern) { App.banner("Pattern can't be empty for a rule."); save.disabled = false; return; }
+            const pattern = patInput.value;  // no trim: a trailing space can be a deliberate word-boundary guard
+            if (!pattern.trim()) { App.banner("Pattern can't be empty for a rule."); save.disabled = false; return; }
             const res = await App.post("/api/rules", { kind: "substring", pattern, category: category || null, role });
             App.notice(res.added
-              ? `Rule added — categorized ${res.categorized} transaction(s).`
-              : `Rule already existed — categorized ${res.categorized} transaction(s).`);
+              ? `Rule added — ${res.categorized} transaction(s) now categorized by rules.`
+              : `Rule already existed — ${res.categorized} transaction(s) now categorized by rules.`);
           } else {
             if (!category) { App.banner("A one-off needs a category."); save.disabled = false; return; }
             await App.post(`/api/transactions/${id}/categorize`, { category, role });

@@ -373,7 +373,7 @@ def rules_add(
     category: Optional[str] = typer.Option(None, "--category"),
     role: Optional[str] = typer.Option(None, "--role", help="transfer|reimbursement|expense|income"),
     counterparty: Optional[str] = typer.Option(None, "--counterparty"),
-    priority: int = typer.Option(100, "--priority"),
+    priority: int = typer.Option(100, "--priority", help="Lower wins; ties: longer pattern first, then lower id."),
     source: str = typer.Option("manual", "--source", help="manual|claude|seed"),
 ) -> None:
     """Add a categorization rule (the learn-once cache). Duplicate patterns no-op."""
@@ -393,11 +393,11 @@ def rules_add(
 
 @rules_app.command("list")
 def rules_list() -> None:
-    """List categorization rules in match order."""
+    """List categorization rules in match order (priority, then longer pattern, then id)."""
     from bankapp.classify import engine as classify
 
     _, conn = _load()
-    rules = sorted(classify.load_rules(conn), key=lambda r: (r.priority, r.id))
+    rules = sorted(classify.load_rules(conn), key=classify.match_order_key)
     if not rules:
         typer.echo("No rules.")
         return

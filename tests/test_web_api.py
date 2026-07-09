@@ -541,6 +541,54 @@ def test_post_rule_categorizes_matching_txns(app_env):
     assert r2.json()["added"] is False
 
 
+def test_post_rule_recategorizes_already_ruled_txns(app_env):
+    """Adding a more specific rule at the same priority must re-apply to history:
+    a txn already claimed by an older generic rule gets recategorized, while a
+    manual-override row matching the new pattern is left alone."""
+    dbmod.init_db(app_env["db"])
+    conn = dbmod.connect(app_env["db"])
+    aid = insert_account(conn, key="td-chequing", currency="CAD")
+    eats_id = insert_raw_txn(
+        conn, aid, posted_date="2026-04-01", amount_minor=-2100, currency="CAD",
+        description_raw="UBER EATS TORONTO", description_norm="uber eats toronto",
+        dedup_key="sha256:u1")
+    manual_id = insert_raw_txn(
+        conn, aid, posted_date="2026-04-02", amount_minor=-1800, currency="CAD",
+        description_raw="UBER EATS OTTAWA", description_norm="uber eats ottawa",
+        dedup_key="sha256:u2")
+    conn.commit()
+    conn.close()
+
+    client = _client(app_env)
+
+    # older generic rule claims both rows...
+    r = client.post("/api/rules", json={"pattern": "uber", "category": "transport"})
+    assert r.status_code == 200
+    assert r.json()["categorized"] == 2
+
+    # ...then one row gets a manual one-off override
+    r = client.post(f"/api/transactions/{manual_id}/categorize", json={"category": "team-lunch"})
+    assert r.status_code == 200
+
+    # newer, more specific rule at the same priority must steal the rule-sourced row
+    r = client.post("/api/rules", json={"pattern": "uber eats", "category": "dining"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["added"] is True
+    # recompute-all count = all rule-sourced rows currently matched by the rule set
+    assert body["categorized"] == 1
+
+    conn = dbmod.connect(app_env["db"])
+    eats = conn.execute(
+        "SELECT category, source FROM txn_interp WHERE raw_txn_id=?", (eats_id,)).fetchone()
+    manual = conn.execute(
+        "SELECT category, source FROM txn_interp WHERE raw_txn_id=?", (manual_id,)).fetchone()
+    conn.close()
+    assert eats["category"] == "dining"       # recategorized by the new rule
+    assert manual["category"] == "team-lunch"  # manual override untouched
+    assert manual["source"] == "manual"
+
+
 def test_post_rule_invalid_regex_400(app_env):
     _seed_uncategorized(app_env)
     client = _client(app_env)

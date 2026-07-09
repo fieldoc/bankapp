@@ -1,8 +1,16 @@
 """Rules-first categorization engine + rule persistence.
 
 A persisted rule IS the learn-once cache (manual or Claude verdict). Matching is
-deterministic: rules are tried in (priority ASC, id ASC) order, first match wins.
-Patterns are stored lowercase and matched against description_norm (also lowercase).
+deterministic: rules are tried in (priority ASC, pattern length DESC, id ASC) order —
+at equal priority, a longer (more specific) pattern wins over a shorter one, and exact
+length ties fall back to insertion order (lower id) — first match wins.
+
+Substring patterns are stored lowercase, with internal whitespace runs collapsed to a
+single space but a single leading/trailing space preserved (some patterns rely on a
+trailing space as a word-boundary guard, e.g. "pho "). Regex patterns are stored
+exactly as authored — never lowercased, since that would corrupt escapes like \\D,
+\\W, or [A-Z] — and are compiled with re.IGNORECASE so they still match
+case-insensitively against description_norm (which is always lowercase).
 """
 
 from __future__ import annotations
@@ -35,8 +43,8 @@ class Rule:
 def validate_pattern(match_kind: str, pattern: str) -> None:
     if match_kind not in ("substring", "regex"):
         raise InvalidPatternError(f"match_kind must be 'substring' or 'regex', got {match_kind!r}")
-    if not pattern:
-        raise InvalidPatternError("pattern must be non-empty")
+    if not pattern or not pattern.strip():
+        raise InvalidPatternError("pattern must not be empty or whitespace-only")
     if match_kind == "regex":
         try:
             re.compile(pattern)
@@ -44,13 +52,34 @@ def validate_pattern(match_kind: str, pattern: str) -> None:
             raise InvalidPatternError(f"invalid regex {pattern!r}: {exc}") from exc
 
 
+def match_order_key(rule: Rule) -> tuple:
+    """Deterministic match order: priority ASC, then longer (more specific) pattern
+    first, then id ASC for exact-length ties."""
+    return (rule.priority, -len(rule.pattern), rule.id)
+
+
+def normalize_substring_pattern(pattern: str) -> str:
+    """Store-time normalization for substring patterns: lowercase and collapse internal
+    whitespace runs to a single space (description_norm never contains doubles, so a
+    double-space pattern could never match), preserving a single leading/trailing
+    space — some patterns use a trailing space as a word-boundary guard
+    (e.g. "pho " must not match "phone")."""
+    lead = " " if pattern[:1].isspace() else ""
+    trail = " " if pattern[-1:].isspace() else ""
+    return lead + " ".join(pattern.split()).lower() + trail
+
+
 class RuleEngine:
     """Compiled, ordered rule set. `match` returns the first matching rule or None."""
 
     def __init__(self, rules: list[Rule]):
-        self._rules = sorted(rules, key=lambda r: (r.priority, r.id))
+        self._rules = sorted(rules, key=match_order_key)
+        # description_norm is always lowercase; IGNORECASE keeps regex patterns
+        # (stored exactly as authored, possibly with upper-case classes) matching it.
         self._compiled = {
-            r.id: re.compile(r.pattern) for r in self._rules if r.match_kind == "regex"
+            r.id: re.compile(r.pattern, re.IGNORECASE)
+            for r in self._rules
+            if r.match_kind == "regex"
         }
 
     def match(self, description_norm: str) -> Optional[Rule]:
@@ -87,10 +116,14 @@ def add_rule(
 ) -> bool:
     """Add a rule. Returns True if inserted, False if it already existed (friendly no-op).
 
-    Validates the pattern (invalid regex rejected here) and stores it lowercase.
+    Validates the pattern (invalid regex / empty rejected here). Substring patterns are
+    normalized via normalize_substring_pattern; regex patterns are stored exactly as
+    authored (lowercasing would corrupt escapes like \\D or [A-Z]) and matched
+    case-insensitively by the engine.
     """
     validate_pattern(match_kind, pattern)
-    pattern = pattern.lower()
+    if match_kind == "substring":
+        pattern = normalize_substring_pattern(pattern)
     before = conn.total_changes
     with conn:
         conn.execute(
