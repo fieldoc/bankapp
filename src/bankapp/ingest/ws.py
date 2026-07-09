@@ -10,6 +10,7 @@ SkipResult, and any WS API error in sync() is caught so a scheduled run still ex
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,6 +20,8 @@ from zoneinfo import ZoneInfo
 
 from bankapp import money
 from bankapp.ingest.core import NormalizedTxn, make_txn
+
+logger = logging.getLogger(__name__)
 
 SERVICE = "bankapp"
 WS_ENTRY = "ws-session"
@@ -56,6 +59,7 @@ class SkipResult:
 class SyncReport:
     inserted: int = 0
     skipped: int = 0
+    suspicious_signs: int = 0  # purchase-type activities that parsed POSITIVE (see map_activity)
     errors: list[str] = None  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -127,10 +131,33 @@ def _to_local_date(occurred_at: str, tz: ZoneInfo) -> str:
     return dt.astimezone(tz).strftime("%Y-%m-%d")
 
 
+_PURCHASE_TYPE_TOKENS = ("SPEND", "PURCHASE")
+
+
+def is_suspicious_positive_purchase(act: dict) -> bool:
+    """True when a purchase/spend-type activity would parse POSITIVE.
+
+    KNOWN DATA CORRUPTION: from ~2025-11-06 to ~2026-03-16 the WS ca-cash activity
+    stream served wrong/missing `amountSign` for purchases (verified against real
+    data), so purchases parsed positive. Genuine refunds are ALSO Purchase-type
+    positives (e.g. a real $0.50 "Bam*Big Wheel Burger" credit), so this can only
+    flag for review — the sign must never be auto-flipped.
+    """
+    sign = (act.get("amountSign") or "").lower()
+    if "neg" in sign:
+        return False
+    kind = f"{act.get('type') or ''} {act.get('subType') or ''}".upper()
+    return any(tok in kind for tok in _PURCHASE_TYPE_TOKENS)
+
+
 def map_activity(
     act: dict, account_key: str, tz: Union[str, ZoneInfo]
 ) -> Union[NormalizedTxn, SkipResult]:
-    """Map one WS activity dict to a NormalizedTxn, or a SkipResult (pending / drift)."""
+    """Map one WS activity dict to a NormalizedTxn, or a SkipResult (pending / drift).
+
+    A purchase-type activity that parses positive is logged as a warning but ingested
+    unchanged (see is_suspicious_positive_purchase — refunds are legitimate positives).
+    """
     if isinstance(tz, str):
         tz = ZoneInfo(tz)
     try:
@@ -143,6 +170,19 @@ def map_activity(
         magnitude = Decimal(str(act["amount"]))
         signed = -magnitude if "neg" in sign else magnitude
         amount_minor = money.to_minor(signed, currency)
+
+        if is_suspicious_positive_purchase(act):
+            logger.warning(
+                "WS activity %s (%r, %s %s) is purchase-type but parsed POSITIVE — "
+                "amountSign=%r may be corrupt (known WS issue ~2025-11..2026-03). "
+                "Ingested as-is: if this is a refund it is correct; if it is a spend, "
+                "fix it manually.",
+                act.get("canonicalId"),
+                act.get("description") or act.get("spendMerchant"),
+                signed,
+                currency,
+                act.get("amountSign"),
+            )
 
         posted_date = _to_local_date(act["occurredAt"], tz)
         desc = act.get("description") or f"{act['type']}: {act['subType']}"
@@ -320,6 +360,8 @@ def sync_ws(conn, cfg, client=None, api_factory=None, how_many: int = 200,
                     report.skipped += 1
                 else:
                     txns.append(mapped)
+                    if is_suspicious_positive_purchase(act):
+                        report.suspicious_signs += 1
 
         inserted, dup_skipped = core.insert_batch(conn, txns)
         report.inserted = inserted

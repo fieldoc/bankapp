@@ -59,7 +59,7 @@ get_activities(account_id: str | list[str], how_many=50, order_by='OCCURRED_AT_D
 | dedup id | `canonicalId` | -> `wsid:<canonicalId>` |
 | account | `accountId` | WS account id -> map to config key via accounts.external_id |
 | magnitude | `amount` | string, unsigned magnitude |
-| sign | `amountSign` | **ASSUMED** values `"positive"`/`"negative"`; mapper treats a value containing `neg` as negative, else positive. VERIFY on real data. |
+| sign | `amountSign` | **KNOWN UNRELIABLE** (verified against real data): values are `"positive"`/`"negative"` and the mapper treats a value containing `neg` as negative, else positive — BUT purchases in the ca-cash activity stream carried wrong/missing `amountSign` from ~2025-11-06 to ~2026-03-16, so purchases parsed positive. `amountSign` is not trustworthy on its own for purchase-type activities. The mapper warns (never auto-flips — genuine refunds are Purchase-type positives, e.g. a real $0.50 "Bam*Big Wheel Burger" credit) via `is_suspicious_positive_purchase`. |
 | currency | `currency` | e.g. `CAD`/`USD` |
 | instant | `occurredAt` | ISO-8601 **UTC** instant -> convert to America/Vancouver local date (midnight boundary matters) |
 | status | `status` | **ASSUMED** posted-ish; mapper skips when status lowercases to contain `pending`. VERIFY. |

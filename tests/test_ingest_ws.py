@@ -50,6 +50,75 @@ def test_map_schema_drift_skips_not_crashes():
     assert "schema-drift" in r.reason
 
 
+# ---- suspicious amountSign on purchases (WS served corrupt signs Nov 2025–Mar 2026) ----
+
+def _purchase_act(canonical_id="act-spend-1", amount="23.45", amount_sign="positive",
+                  description="STARBUCKS #123"):
+    return {
+        "canonicalId": canonical_id,
+        "accountId": "ws-acct-cash-1",
+        "type": "SPEND",
+        "subType": "PREPAID",
+        "amount": amount,
+        "amountSign": amount_sign,
+        "currency": "CAD",
+        "occurredAt": "2026-01-10T18:05:00.000Z",
+        "status": "posted",
+        "spendMerchant": description,
+        "description": description,
+    }
+
+
+def test_positive_purchase_warns_and_keeps_amount(caplog):
+    """A spend/purchase activity that parses POSITIVE is suspicious (WS served
+    wrong/missing amountSign for purchases ~2025-11..2026-03) — warn loudly but do
+    NOT flip: genuine refunds are Purchase-type positives too."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="bankapp.ingest.ws"):
+        t = ws.map_activity(_purchase_act(), "ws-cash", "America/Vancouver")
+    assert isinstance(t, NormalizedTxn)
+    assert t.amount_minor == 2345  # NOT mutated
+    assert any(
+        "act-spend-1" in rec.getMessage() and "positive" in rec.getMessage().lower()
+        for rec in caplog.records
+    )
+
+
+def test_negative_purchase_does_not_warn(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="bankapp.ingest.ws"):
+        t = ws.map_activity(_purchase_act(amount_sign="negative"), "ws-cash", "America/Vancouver")
+    assert isinstance(t, NormalizedTxn)
+    assert t.amount_minor == -2345
+    assert caplog.records == []
+
+
+def test_refund_positive_purchase_keeps_positive_amount(caplog):
+    """A genuine refund (Purchase-type, positive, e.g. the real $0.50 'Bam*Big Wheel
+    Burger' credit) must still ingest as a positive txn — the warning is advisory only."""
+    import logging
+
+    act = _purchase_act(canonical_id="act-refund-1", amount="0.50",
+                        description="Bam*Big Wheel Burger")
+    with caplog.at_level(logging.WARNING, logger="bankapp.ingest.ws"):
+        t = ws.map_activity(act, "ws-cash", "America/Vancouver")
+    assert isinstance(t, NormalizedTxn)
+    assert t.amount_minor == 50  # positive, untouched
+    assert t.dedup_key == "wsid:act-refund-1"
+
+
+def test_non_purchase_positive_does_not_warn(caplog):
+    """Deposits are legitimately positive — no warning."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="bankapp.ingest.ws"):
+        t = ws.map_activity(SAMPLE[1], "ws-cash", "America/Vancouver")  # DEPOSIT
+    assert t.amount_minor == 50000
+    assert caplog.records == []
+
+
 # ---- keyring auth ----
 
 def test_save_and_load_session(memkeyring):
@@ -120,6 +189,20 @@ def test_sync_ws_ingests_and_skips_pending(synced_db):
     assert report.errors == []
     assert conn.execute("SELECT COUNT(*) FROM raw_txn").fetchone()[0] == 3
     assert dbmod.get_meta(conn, "ws_last_sync")
+
+
+def test_sync_ws_counts_suspicious_signs(synced_db):
+    """The per-run report surfaces how many ingested rows looked like
+    positive-parsed purchases (possible corrupt amountSign)."""
+    cfg, conn = synced_db
+    ws_accounts = [{"id": "ws-acct-cash-1", "unifiedAccountType": "CASH"}]
+    acts = SAMPLE + [_purchase_act(canonical_id="act-spend-9")]
+    client = _FakeClient(ws_accounts, {"ws-acct-cash-1": acts})
+
+    report = ws.sync_ws(conn, cfg, client=client)
+
+    assert report.inserted == 4
+    assert report.suspicious_signs == 1
 
 
 def test_sync_ws_idempotent(synced_db):

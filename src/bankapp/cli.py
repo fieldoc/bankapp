@@ -353,7 +353,9 @@ def sync_ws_cmd(
     report = wsmod.sync_ws(conn, cfg, how_many=how_many, load_all=all_history)
     for e in report.errors:
         typer.echo(f"WARNING: {e}")
-    typer.echo(f"WS sync: {report.inserted} inserted, {report.skipped} skipped")
+    extra = (f", {report.suspicious_signs} suspicious sign(s) — see warnings"
+             if report.suspicious_signs else "")
+    typer.echo(f"WS sync: {report.inserted} inserted, {report.skipped} skipped{extra}")
 
 
 @app.command()
@@ -712,7 +714,9 @@ def refresh() -> None:
     ws_report = wsmod.sync_ws(conn, cfg)
     for e in ws_report.errors:
         typer.echo(f"WARNING: ws: {e}")
-    typer.echo(f"ws: {ws_report.inserted} inserted, {ws_report.skipped} skipped")
+    ws_extra = (f", {ws_report.suspicious_signs} suspicious sign(s) — see warnings"
+                if ws_report.suspicious_signs else "")
+    typer.echo(f"ws: {ws_report.inserted} inserted, {ws_report.skipped} skipped{ws_extra}")
 
     # 2. Ingest inbox files (OFX/QFX auto-mapped; CSV by filename convention)
     ins, skip, quar, msgs = _ingest_inbox(cfg, conn)
