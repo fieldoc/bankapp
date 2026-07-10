@@ -79,14 +79,25 @@ Automation: see [`docs/scheduling.md`](docs/scheduling.md) (Windows Task Schedul
 
 `finance serve` starts a **local-only** web dashboard (binds `127.0.0.1`, opens your browser).
 Nothing leaves the machine — Chart.js is vendored under `src/bankapp/web/static/vendor/`, so
-no CDN is contacted at runtime. It reads the same SQLite DB as the CLI; the only writes it
-makes are **categorization** (add a rule, or set a one-off category) via two POST routes that
-go through the classify engine — everything else still goes through the CLI. Pages: Overview
+no CDN is contacted at runtime. It reads the same SQLite DB as the CLI. It writes in two
+places: **categorization** (add a rule, or set a one-off category) through the classify
+engine, and **goals** (add, edit, archive) through the goals module — everything else
+still goes through the CLI. Pages: Overview
 (net worth, cash flow, budgets, and the latest **advisor brief**), Transactions (filter/paginate,
 per-currency subtotals, netted transfers badged, **＋ categorize** on uncategorized rows),
-Subscriptions & Leaks, Goals, Receivables, and Advice history. On a busy
+Subscriptions & Leaks, Goals (**＋ New goal**, edit, archive), Receivables, and Advice history. On a busy
 port it prints a friendly message; pass `--port` to pick another. The advisor skill persists its
 coaching via `finance advice add`, and the Overview surfaces the newest brief.
+
+### Goals are owned by the app, not by `config.toml`
+
+A `[[goals]]` block is a **seed**: `finance init` creates that goal the first time it sees
+the name, then never touches it again. Afterwards the Goals page is the place to change
+one — editing the TOML will not alter an existing goal, and deleting the block will not
+remove it. Removing a goal **archives** it (it stops counting, and reappears under
+*Archived* where you can restore it) rather than destroying its history. Within a single
+currency, the `allocation_pct` of all active goals must total 100% or less; goals in
+different currencies draw on separate savings pools and are capped separately.
 
 ### Launching it like a real Mac app
 
