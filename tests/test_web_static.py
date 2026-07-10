@@ -86,3 +86,14 @@ def test_no_external_origins(app_env):
         assert r.status_code == 200, path
         found = _EXTERNAL.findall(r.text)
         assert not found, f"{path} references external origin(s): {found}"
+
+
+def test_goals_page_has_crud_ui(app_env):
+    """The Goals page must ship the add/edit/archive entry points + modal wiring."""
+    client = _client(app_env)
+    html = client.get("/goals.html").text
+    assert "new-goal" in html           # add button hook
+    assert "openGoalModal" in html      # modal builder
+    assert "goal-edit" in html          # per-row edit hook
+    assert "goal-archive" in html       # per-row archive hook
+    assert "include_archived" in html   # archived disclosure

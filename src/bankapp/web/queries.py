@@ -44,7 +44,11 @@ def filter_options(conn: sqlite3.Connection) -> dict:
            UNION
            SELECT DISTINCT currency FROM accounts"""
     ).fetchall()
-    currencies = {"CAD": money.exponent_for("CAD")}
+    # Seed with every currency we know an exponent for. This map is an exponent lookup
+    # for App.fmtMoney, not a filter list, so a superset is harmless -- and it stops a
+    # goal denominated in a currency the ledger hasn't seen yet (e.g. BTC) from being
+    # rendered with CAD's two decimal places.
+    currencies = {c: money.exponent_for(c) for c in money.known_currencies()}
     for r in currency_rows:
         currencies[r["currency"]] = money.exponent_for(r["currency"])
 

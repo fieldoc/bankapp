@@ -267,3 +267,12 @@ table.tbl tr.netted td { color: var(--faint); }
   .nav .chip { display: none; }
   main { padding: 22px 16px 56px; }
 }
+
+/* ---------- goals ---------- */
+.block-head { display: flex; justify-content: flex-end; margin-bottom: 12px; }
+.goal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
+#archived-block summary {
+  font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--faint); cursor: pointer; margin-bottom: 10px;
+}
+#archived-block .bar-row { opacity: .6; }
