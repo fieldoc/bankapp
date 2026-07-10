@@ -320,7 +320,11 @@ def _match_reimbursements(conn, tmpl: Template, reimb_acct_ids: list[int]) -> No
             if expected is None or exp_date is None:
                 continue
             outstanding = expected - received
-            if outstanding <= 0:
+            # Same "paid" test as _recompute_status's settled check: a period within
+            # amount_tolerance is full. Settle-ups flex a little month to month, and a
+            # slightly-short period must not swallow the NEXT month's payment (that
+            # cascades every later payment back one period).
+            if outstanding <= tmpl.amount_tolerance_minor:
                 continue
             lo, hi = _window_bounds(date.fromisoformat(exp_date), tmpl)
             if lo <= cand_date <= hi:
