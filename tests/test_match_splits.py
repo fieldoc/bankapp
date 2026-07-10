@@ -153,6 +153,52 @@ def test_partial_payments_accumulate(rent_db):
     assert r["status"] == "settled"
 
 
+def test_within_tolerance_period_does_not_cannibalize_next_payment(rent_db):
+    """A payment short by LESS than amount_tolerance settles its period; the next
+    month's payment must go to the next period, not top up the first one.
+
+    Regression: real settle-ups flex a little month to month (shared household
+    buys). The allocator used `outstanding <= 0` while the status check used
+    `received >= expected - tolerance`, so one slightly-short month swallowed the
+    next month's payment and every later payment shifted back one period — the
+    newest period read "open" even though it had been paid early.
+    """
+    conn, ids = rent_db
+    # expected receivable per month = 120000; tolerance = 500
+    _expense(conn, ids["ws-cash"], date_s="2026-01-01", dedup="e_jan")
+    _expense(conn, ids["ws-cash"], date_s="2026-02-01", dedup="e_feb")
+    _reimb(conn, ids["td-chequing"], date_s="2026-01-05", amt=119700, dedup="r_jan")  # $3 short: within tol
+    _reimb(conn, ids["td-chequing"], date_s="2026-02-04", amt=120000, dedup="r_feb")
+    splits.match_splits(conn, today=date(2026, 2, 10))
+
+    by_period = {
+        r["period_key"]: r
+        for r in conn.execute(
+            """SELECT g.period_key, COUNT(*) AS n_reimb, SUM(ABS(r.amount_minor)) AS recv
+               FROM groups g JOIN group_members gm ON gm.group_id = g.id
+               JOIN raw_txn r ON r.id = gm.raw_txn_id
+               WHERE gm.role = 'reimbursement' GROUP BY g.period_key"""
+        )
+    }
+    assert by_period["2026-01"]["n_reimb"] == 1 and by_period["2026-01"]["recv"] == 119700
+    assert by_period["2026-02"]["n_reimb"] == 1 and by_period["2026-02"]["recv"] == 120000
+    statuses = {r["period_key"]: r["status"] for r in conn.execute("SELECT period_key, status FROM groups")}
+    assert statuses == {"2026-01": "settled", "2026-02": "settled"}
+
+
+def test_genuinely_short_period_still_accumulates(rent_db):
+    """Short by MORE than tolerance = a real partial payment: the next inflow must
+    still top it up (the pre-existing accumulate behavior, now tolerance-bounded)."""
+    conn, ids = rent_db
+    _expense(conn, ids["ws-cash"], date_s="2026-01-01", dedup="e_jan")
+    _reimb(conn, ids["td-chequing"], date_s="2026-01-05", amt=60000, dedup="r_half")   # half: way past tol
+    _reimb(conn, ids["td-chequing"], date_s="2026-01-12", amt=60000, dedup="r_rest")
+    splits.match_splits(conn, today=date(2026, 1, 20))
+    r = conn.execute("SELECT received_minor, status FROM v_receivables").fetchone()
+    assert r["received_minor"] == 120000
+    assert r["status"] == "settled"
+
+
 # ---- amount-gated reimbursement matching (anonymized e-transfer senders) ----
 
 RENT_AMOUNT_GATED = dataclasses.replace(
