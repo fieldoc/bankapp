@@ -10,13 +10,21 @@
 -- worktree built this — so the app keeps working after the build worktree is gone.
 -- Rebuild with scripts/mac-app/build.sh.
 
+property dashPort : "8377"
+property dashURL : "http://127.0.0.1:8377/"
 property serverPID : ""
 
 -- Kill whatever is LISTENing on the dashboard port. -sTCP:LISTEN so we only ever
 -- target a server holding the port, never an incidental client connection.
 on portSweepCmd()
-	return "/usr/sbin/lsof -ti tcp:8377 -sTCP:LISTEN | /usr/bin/xargs /bin/kill -9 2>/dev/null; true"
+	return "/usr/sbin/lsof -ti tcp:" & dashPort & " -sTCP:LISTEN | /usr/bin/xargs /bin/kill -9 2>/dev/null; true"
 end portSweepCmd
+
+-- True when something is already LISTENing on the dashboard port.
+on serverIsUp()
+	set n to do shell script "/usr/sbin/lsof -ti tcp:" & dashPort & " -sTCP:LISTEN | /usr/bin/wc -l | /usr/bin/tr -d ' '"
+	return n is not "0"
+end serverIsUp
 
 on run
 	-- Auto-kill any old server first, so the fresh one can bind (and open the browser;
@@ -37,6 +45,18 @@ on run
 	set startCmd to "mkdir -p \"$HOME/finance/logs\"; cd \"$HOME/BankApp\" || exit 1; /usr/bin/nohup \"$HOME/BankApp/.venv/bin/finance\" serve > \"$HOME/finance/logs/webapp.log\" 2>&1 < /dev/null & echo $!"
 	set serverPID to do shell script startCmd
 end run
+
+-- Clicking the Dock/Spotlight icon while the app is ALREADY running sends `reopen`, not
+-- `run`. Without this the click does nothing visible (a stay-open applet has no window),
+-- which reads as "the app is broken". Re-show the dashboard instead — and if the server
+-- died under us, start a fresh one (it opens the browser itself).
+on reopen
+	if serverIsUp() then
+		do shell script "/usr/bin/open " & quoted form of dashURL
+	else
+		run
+	end if
+end reopen
 
 -- Stay-open applets must return from `on idle`; we don't need periodic work, so idle
 -- rarely (once an hour). The point of staying open is purely to keep `on quit` reachable.
