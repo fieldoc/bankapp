@@ -133,6 +133,9 @@
 
     // `existing` is a goal object when editing, null when creating.
     function openGoalModal(existing) {
+      // A second click while one is open would stack overlays; only the top one is
+      // reachable and closing it reveals a stale twin.
+      if (document.querySelector(".modal")) return;
       const overlay = document.createElement("div");
       overlay.className = "modal";
       const card = document.createElement("div");
