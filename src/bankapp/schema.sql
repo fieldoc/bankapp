@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS group_members (
 -- lone hinted-transfer legs excluded (pending, not lost).
 CREATE VIEW IF NOT EXISTS v_effective AS
 SELECT r.id, r.account_id, r.posted_date, r.currency, r.amount_minor, r.description_norm,
-  i.category, i.role_hint, gm.role AS group_role, g.type AS group_type,
+  i.category, i.role_hint, i.counterparty, gm.role AS group_role, g.type AS group_type,
   CASE
     WHEN gm.role IN ('transfer_in','transfer_out') THEN 0
     WHEN gm.role = 'reimbursement' THEN 0

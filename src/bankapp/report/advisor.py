@@ -220,8 +220,21 @@ def budget_status(conn: sqlite3.Connection, month: str, today: Optional[date] = 
 # ---- T9.3 subscriptions + leaks (pure over txn tuples) ----------------------
 
 def merchant_token(description_norm: str) -> str:
-    """Coarse merchant key: first whitespace token of the normalized description."""
+    """Coarse merchant key from a normalized description.
+
+    Wealthsimple prefixes every line with its transaction type ("purchase: X",
+    "deposit: Y", "pre-authorized debit: to Z"), so the first raw token would
+    collapse whole accounts into one bucket. Drop everything through the first
+    ':'-terminated token (within the leading few tokens), then a leading to/from
+    connector, and key on the first merchant-ish token that remains.
+    """
     parts = description_norm.split()
+    for i, tok in enumerate(parts[:3]):
+        if tok.endswith(":"):
+            parts = parts[i + 1:]
+            break
+    if parts and parts[0] in ("to", "from"):
+        parts = parts[1:]
     return parts[0] if parts else "(unknown)"
 
 
@@ -259,18 +272,50 @@ def _monthly_cost(cadence: str, amount_minor: int) -> int:
     return round(a / 12)  # annual
 
 
-def detect_subscriptions(txns: Iterable[tuple]) -> list[Subscription]:
-    """Detect recurring charges. txns: (posted_date, amount_minor, description_norm, currency).
+# A subscription's amounts must have a dominant cluster: >=3 charges within
+# +-CLUSTER_TOL of a member amount. Regular-cadence-but-erratic-amount merchants
+# (weekly groceries) have no such cluster and stay out of the report; a price
+# change or one spike month keeps its cluster and stays IN (the old whole-range
+# +-5% gate deleted any subscription whose price ever moved — precisely the ones
+# worth watching).
+_CLUSTER_TOL = 0.05
+_MIN_CLUSTER = 3
+# price_creep must be material: > +-1% of the trailing median AND >= 25 minor
+# units, so FX wobble on a USD-billed charge (a few cents) never fires it.
+_CREEP_REL = 0.01
+_CREEP_ABS_MINOR = 25
 
-    Flags a merchant with >=3 outflow charges at a near-regular cadence (monthly +-4d /
-    weekly +-2d / annual +-10d) and stable amounts (+-5%). Reports effective monthly
-    cost and a price-creep flag (latest charge > trailing median of earlier charges).
+
+def _dominant_cluster(amounts: list[int]) -> list[int]:
+    """Largest subset of amounts within +-_CLUSTER_TOL of one of its members."""
+    best: list[int] = []
+    for center in amounts:
+        members = [a for a in amounts if abs(a - center) <= _CLUSTER_TOL * center]
+        if len(members) > len(best):
+            best = members
+    return best
+
+
+def detect_subscriptions(txns: Iterable[tuple]) -> list[Subscription]:
+    """Detect recurring charges.
+
+    txns: (posted_date, amount_minor, description_norm, currency[, counterparty]).
+    Charges group by rule-assigned counterparty when present (merges vendor renames,
+    e.g. one vendor billing as two merchant strings), else by merchant_token.
+
+    A subscription = >=3 outflow charges at a near-regular cadence (monthly +-4d /
+    weekly +-2d / annual +-10d) whose amounts have a dominant cluster (see above).
+    monthly_cost reflects the CURRENT price (median of the last 3 charges), and
+    price_creep flags a material rise of the latest charge over its history.
     """
     groups: dict[tuple, list[tuple]] = {}
-    for posted_date, amount_minor, desc_norm, currency in txns:
+    for row in txns:
+        posted_date, amount_minor, desc_norm, currency = row[:4]
+        counterparty = row[4] if len(row) > 4 else None
         if amount_minor >= 0:
             continue  # charges only
-        groups.setdefault((merchant_token(desc_norm), currency), []).append((posted_date, amount_minor))
+        key = (counterparty or merchant_token(desc_norm), currency)
+        groups.setdefault(key, []).append((posted_date, amount_minor))
 
     subs: list[Subscription] = []
     for (merchant, currency), charges in groups.items():
@@ -283,15 +328,16 @@ def detect_subscriptions(txns: Iterable[tuple]) -> list[Subscription]:
         if cadence is None:
             continue
         amounts = [abs(c[1]) for c in charges]
-        med_amt = statistics.median(amounts)
-        if med_amt == 0 or (max(amounts) - min(amounts)) > 0.05 * med_amt:
-            continue  # amounts not stable
+        if len(_dominant_cluster(amounts)) < _MIN_CLUSTER:
+            continue  # no stable core -> not a subscription
+        current = round(statistics.median(amounts[-3:]))
         trailing_median = statistics.median(amounts[:-1])
-        price_creep = amounts[-1] > trailing_median
+        rise = amounts[-1] - trailing_median
+        price_creep = rise > max(_CREEP_REL * trailing_median, _CREEP_ABS_MINOR)
         subs.append(
             Subscription(
                 merchant=merchant, currency=currency, cadence=cadence,
-                monthly_cost_minor=_monthly_cost(cadence, round(med_amt)),
+                monthly_cost_minor=_monthly_cost(cadence, current),
                 last_charge=charges[-1][0], count=len(charges), price_creep=price_creep,
             )
         )
@@ -308,20 +354,24 @@ class LeakRow:
 
 
 def leak_report(txns: Iterable[tuple], threshold_minor: int) -> list[LeakRow]:
-    """Drip spending. txns: (posted_date, amount_minor, description_norm, category, currency).
+    """Drip spending. txns: (posted_date, amount_minor, description_norm, category,
+    currency[, counterparty]).
 
     Aggregates per (merchant, month) all outflows under threshold, plus everything
     categorized 'fees' regardless of size — the spending that never feels like a decision.
+    Merchant = rule-assigned counterparty when present, else merchant_token.
     """
     agg: dict[tuple, list[int]] = {}
-    for posted_date, amount_minor, desc_norm, category, currency in txns:
+    for row in txns:
+        posted_date, amount_minor, desc_norm, category, currency = row[:5]
+        counterparty = row[5] if len(row) > 5 else None
         if amount_minor >= 0:
             continue
         is_small = abs(amount_minor) < threshold_minor
         is_fee = (category == "fees")
         if not (is_small or is_fee):
             continue
-        key = (merchant_token(desc_norm), posted_date[:7], currency)
+        key = (counterparty or merchant_token(desc_norm), posted_date[:7], currency)
         agg.setdefault(key, []).append(-amount_minor)
     rows = [
         LeakRow(merchant, month, currency, sum(vals), len(vals))
@@ -331,23 +381,27 @@ def leak_report(txns: Iterable[tuple], threshold_minor: int) -> list[LeakRow]:
 
 
 def _effective_txn_tuples(conn: sqlite3.Connection):
-    """(posted_date, effective_minor, description_norm, category, currency) over v_effective."""
+    """(posted_date, effective_minor, description_norm, category, currency, counterparty)
+    over v_effective."""
     return conn.execute(
-        "SELECT posted_date, effective_minor, description_norm, category, currency FROM v_effective"
+        "SELECT posted_date, effective_minor, description_norm, category, currency, counterparty"
+        " FROM v_effective"
     ).fetchall()
 
 
 def subscriptions_from_db(conn: sqlite3.Connection) -> list[Subscription]:
     rows = _effective_txn_tuples(conn)
     return detect_subscriptions(
-        (r["posted_date"], r["effective_minor"], r["description_norm"], r["currency"]) for r in rows
+        (r["posted_date"], r["effective_minor"], r["description_norm"], r["currency"], r["counterparty"])
+        for r in rows
     )
 
 
 def leaks_from_db(conn: sqlite3.Connection, threshold_minor: int) -> list[LeakRow]:
     rows = _effective_txn_tuples(conn)
     return leak_report(
-        ((r["posted_date"], r["effective_minor"], r["description_norm"], r["category"], r["currency"])
+        ((r["posted_date"], r["effective_minor"], r["description_norm"], r["category"], r["currency"],
+          r["counterparty"])
          for r in rows),
         threshold_minor,
     )
