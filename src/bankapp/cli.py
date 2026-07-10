@@ -550,16 +550,17 @@ def report_savings(months: Optional[int] = typer.Option(None, "--months", help="
     if not rows:
         typer.echo("No cashflow yet.")
         return
-    prev = None
+    prev: dict[str, int] = {}  # per currency — a USD net is not comparable to a CAD one
     for r in rows:
-        arrow = "=" if prev is None or r.net_minor == prev else ("+" if r.net_minor > prev else "-")
+        p = prev.get(r.currency)
+        arrow = "=" if p is None or r.net_minor == p else ("+" if r.net_minor > p else "-")
         typer.echo(
             f"{r.month} {r.currency}  income={money.from_minor(r.income_minor, r.currency):>10}  "
             f"spend={money.from_minor(r.spend_minor, r.currency):>10}  "
             f"net={money.from_minor(r.net_minor, r.currency):>10}  "
             f"rate={r.savings_rate * 100:5.1f}%  {arrow}"
         )
-        prev = r.net_minor
+        prev[r.currency] = r.net_minor
 
 
 @budget_app.command("status")

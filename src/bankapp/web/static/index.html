@@ -103,18 +103,36 @@
     if (!sav.length) {
       App.empty(App.el("cf-panel"), "No monthly cash flow yet.");
     } else {
-      const exp = App.exponentFor(sav[0].currency || "CAD");
-      const div = (x) => (x || 0) / Math.pow(10, exp);
-      const labels = sav.map((s) => s.month);
+      const labels = [...new Set(sav.map((s) => s.month))].sort();
+      const byCcy = new Map();
+      for (const s of sav) {
+        if (!byCcy.has(s.currency)) byCcy.set(s.currency, []);
+        byCcy.get(s.currency).push(s);
+      }
+      const volumeOf = (ccy) => byCcy.get(ccy).reduce((sum, s) => sum + (s.income_minor || 0) + (s.spend_minor || 0), 0);
+      const currencies = [...byCcy.keys()].sort((a, b) => volumeOf(b) - volumeOf(a));
+      // The dominant currency keeps the semantic income/spend/net colours. Every other
+      // currency takes ONE distinct hue (never the dominant trio's) and varies alpha
+      // across its three series — a hue per currency, so no two currencies collide.
+      const pos = App.cssVar("--pos"), neg = App.cssVar("--neg"), accent = App.cssVar("--accent");
+      const extras = App.palette().filter((c) => c !== pos && c !== neg && c !== accent);
+      const datasets = [];
+      currencies.forEach((ccy, i) => {
+        const byMonth = new Map(byCcy.get(ccy).map((s) => [s.month, s]));
+        const exp = App.exponentFor(ccy);
+        const div = (x) => (x || 0) / Math.pow(10, exp);
+        const val = (field) => labels.map((m) => (byMonth.has(m) ? div(byMonth.get(m)[field]) : null));
+        const suffix = currencies.length > 1 ? ` (${ccy})` : "";
+        const hue = i === 0 ? null : extras[(i - 1) % extras.length];
+        const incomeColor = i === 0 ? pos + "cc" : hue + "cc";
+        const spendColor = i === 0 ? neg + "cc" : hue + "55";
+        const netColor = i === 0 ? accent : hue;
+        datasets.push({ type: "bar", label: `income${suffix}`, data: val("income_minor"), backgroundColor: incomeColor });
+        datasets.push({ type: "bar", label: `spend${suffix}`, data: val("spend_minor"), backgroundColor: spendColor });
+        datasets.push({ type: "line", label: `net${suffix}`, data: val("net_minor"), borderColor: netColor, tension: 0.25, pointRadius: 3, spanGaps: true });
+      });
       new Chart(App.el("cf-chart"), {
-        data: {
-          labels,
-          datasets: [
-            { type: "bar", label: "income", data: sav.map((s) => div(s.income_minor)), backgroundColor: App.cssVar("--pos") + "cc" },
-            { type: "bar", label: "spend", data: sav.map((s) => div(s.spend_minor)), backgroundColor: App.cssVar("--neg") + "cc" },
-            { type: "line", label: "net", data: sav.map((s) => div(s.net_minor)), borderColor: App.cssVar("--accent"), tension: 0.25, pointRadius: 3 },
-          ],
-        },
+        data: { labels, datasets },
         options: { scales: { y: { ticks: { callback: (v) => v.toLocaleString() } } } },
       });
     }
