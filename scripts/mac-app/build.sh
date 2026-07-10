@@ -1,11 +1,19 @@
 #!/bin/bash
 # Build BankApp.app (the macOS dashboard launcher) and install it to ~/Applications.
 #
-#   scripts/mac-app/build.sh
+#   scripts/mac-app/build.sh              # build from the committed PNG masters
+#   scripts/mac-app/build.sh --render     # re-rasterize the PNG masters from the SVGs first
 #
-# Reproducible: regenerates the icon, compiles the stay-open applet, embeds the icon,
+# Reproducible: builds the iconset, compiles the stay-open applet, embeds the icon,
 # installs to ~/Applications, and re-registers with LaunchServices so Spotlight/Dock
 # pick it up. Safe to re-run; it replaces any prior install.
+#
+# Two icon masters, because one drawing cannot serve every size. At 16px the detailed
+# mark's thin ribbon is ~1.25px wide and disappears, so sizes <=64px use icon-small.svg
+# (heavier ribbons, wider gap, flat colour) and sizes >=128px use icon.svg. The SVGs are
+# the source of truth; the PNGs beside them are committed so a plain build needs no
+# rasterizer. Pass --render to regenerate them (needs Google Chrome; there is no
+# rsvg-convert/Inkscape/ImageMagick on this machine).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,6 +21,9 @@ STAGE="$SCRIPT_DIR/build"          # gitignored staging area
 APP="$STAGE/BankApp.app"
 DEST="$HOME/Applications/BankApp.app"
 FINANCE="$HOME/BankApp/.venv/bin/finance"
+BIG="$SCRIPT_DIR/icon-1024.png"
+SMALL="$SCRIPT_DIR/icon-small-1024.png"
+CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 echo "==> Sanity: stable finance install"
 if [[ ! -x "$FINANCE" ]]; then
@@ -20,15 +31,34 @@ if [[ ! -x "$FINANCE" ]]; then
   echo "         (Build continues; fix the install or edit the path in BankApp.applescript.)" >&2
 fi
 
-echo "==> Generating icon"
-rm -rf "$STAGE"; mkdir -p "$STAGE"
-/usr/bin/python3 "$SCRIPT_DIR/make_icon.py" "$STAGE/icon_1024.png" >/dev/null
+if [[ "${1:-}" == "--render" ]]; then
+  echo "==> Rasterizing PNG masters from SVG"
+  if [[ ! -x "$CHROME" ]]; then
+    echo "ERROR: --render needs Google Chrome at $CHROME" >&2
+    exit 1
+  fi
+  for pair in "icon.svg:$BIG" "icon-small.svg:$SMALL"; do
+    svg="$SCRIPT_DIR/${pair%%:*}"; out="${pair##*:}"
+    "$CHROME" --headless --disable-gpu --hide-scrollbars --screenshot="$out" \
+      --window-size=1024,1024 --default-background-color=00000000 "file://$svg" >/dev/null 2>&1
+    [[ -s "$out" ]] || { echo "ERROR: failed to render $svg" >&2; exit 1; }
+    echo "    $(basename "$out")"
+  done
+fi
 
+for f in "$BIG" "$SMALL"; do
+  [[ -s "$f" ]] || { echo "ERROR: missing icon master $f (run with --render)" >&2; exit 1; }
+done
+
+echo "==> Building iconset"
+rm -rf "$STAGE"; mkdir -p "$STAGE"
 ICONSET="$STAGE/BankApp.iconset"; mkdir -p "$ICONSET"
-# name:size pairs for a full macOS iconset
-for pair in 16:16 16@2x:32 32:32 32@2x:64 128:128 128@2x:256 256:256 256@2x:512 512:512 512@2x:1024; do
-  name="${pair%%:*}"; px="${pair##*:}"
-  /usr/bin/sips -z "$px" "$px" "$STAGE/icon_1024.png" --out "$ICONSET/icon_${name}.png" >/dev/null 2>&1
+# name:pixels:master — <=64px gets the simplified drawing, >=128px the detailed one.
+for spec in 16:16:S 16@2x:32:S 32:32:S 32@2x:64:S \
+            128:128:B 128@2x:256:B 256:256:B 256@2x:512:B 512:512:B 512@2x:1024:B; do
+  name="${spec%%:*}"; rest="${spec#*:}"; px="${rest%%:*}"; which="${rest##*:}"
+  src="$BIG"; [[ "$which" == "S" ]] && src="$SMALL"
+  /usr/bin/sips -z "$px" "$px" "$src" --out "$ICONSET/icon_${name}.png" >/dev/null 2>&1
 done
 /usr/bin/iconutil -c icns "$ICONSET" -o "$STAGE/AppIcon.icns"
 
