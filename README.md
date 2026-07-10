@@ -102,8 +102,16 @@ Server output goes to `~/finance/logs/webapp.log`.
 
 The app runs the **stable `~/BankApp` install**, not the worktree that built it, so it keeps
 working after the build directory is gone. Re-run `build.sh` to pick up launcher changes; it
-regenerates the icon and replaces the installed copy. Build artifacts under
+rebuilds the icon and replaces the installed copy. Build artifacts under
 `scripts/mac-app/build/` are gitignored.
+
+**The icon** is a Sankey split — one income stream parting into two unequal ribbons — drawn in
+`icon.svg` (detailed, used at ≥128px) and `icon-small.svg` (heavier ribbons, wider gap, flat
+colour, used at ≤64px). Two masters because at 16px the detailed mark's thin ribbon is ~1.25px
+wide and vanishes. The SVGs are the source of truth; the `icon-*.png` beside them are committed
+so an ordinary build needs no rasterizer. After editing an SVG, run `build.sh --render` to
+regenerate the PNGs (that path needs Google Chrome — this machine has no `rsvg-convert`,
+Inkscape, or ImageMagick).
 
 > A stay-open applet must never background a shell command as `cd X && cmd &` inside
 > `do shell script`: the subshell inherits the pipe, so `on run` blocks forever, the applet never

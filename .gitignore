@@ -21,7 +21,6 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# macOS app build artifacts
+# macOS app build artifacts (the icon-*.png masters ARE committed — see scripts/mac-app/build.sh)
 scripts/mac-app/build/
-scripts/mac-app/icon_1024.png
 FULL-BUILD-PLAN.md
