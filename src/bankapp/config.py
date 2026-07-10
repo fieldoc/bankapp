@@ -98,6 +98,7 @@ class Config:
     accounts: tuple[AccountConfig, ...]
     plaid: PlaidConfig
     budgets: dict[str, int]
+    category_groups: dict[str, str]  # category -> Sankey display group, e.g. {"rent": "Housing"}
     goals: tuple[GoalConfig, ...]
     templates: tuple[TemplateConfig, ...]
     leak_threshold_minor: int
@@ -177,6 +178,14 @@ def load_config(path: Optional[Path] = None) -> Config:
         for cat, val in data.get("budgets", {}).items()
     }
 
+    # Display-only category -> group mapping for the cash-flow Sankey. Pure metadata:
+    # unmapped categories fall into a fallback group at render time, so a missing or
+    # partial section is harmless.
+    category_groups = {
+        str(cat): str(group)
+        for cat, group in data.get("category_groups", {}).items()
+    }
+
     goals = tuple(
         GoalConfig(
             name=g["name"],
@@ -211,6 +220,7 @@ def load_config(path: Optional[Path] = None) -> Config:
         accounts=accounts,
         plaid=plaid,
         budgets=budgets,
+        category_groups=category_groups,
         goals=goals,
         templates=templates,
         leak_threshold_minor=leak_threshold_minor,

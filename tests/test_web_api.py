@@ -257,6 +257,37 @@ def test_spend_endpoint(app_env):
     assert r.status_code == 200
 
 
+def test_flows_endpoint(app_env):
+    dbmod.init_db(app_env["db"])
+    conn = dbmod.connect(app_env["db"])
+    _seed_rich(conn)
+    conn.close()
+    client = _client(app_env)
+
+    r = client.get("/api/flows?month=2026-01")
+    assert r.status_code == 200
+    body = r.json()
+    for key in ("month", "currency", "income_total_minor", "spend_total_minor",
+                "savings_minor", "links", "labels", "other_currencies"):
+        assert key in body
+    # conftest maps groceries -> Food
+    assert body["labels"]["cat:groceries"] == "groceries"
+    assert any(l["source"] == "grp:Food" and l["target"] == "cat:groceries" for l in body["links"])
+    # rent expense is uncategorized -> Other group (rent not in conftest mapping)
+    assert body["labels"]["grp:Other"] == "Other"
+    assert all(isinstance(l["flow_minor"], int) and l["flow_minor"] > 0 for l in body["links"])
+
+
+def test_flows_endpoint_no_month_defaults(app_env):
+    dbmod.init_db(app_env["db"])
+    conn = dbmod.connect(app_env["db"])
+    _seed_rich(conn)
+    conn.close()
+    client = _client(app_env)
+    r = client.get("/api/flows")
+    assert r.status_code == 200  # current month has no data -> null, but 200
+
+
 def test_subscriptions_and_leaks_endpoints(app_env):
     dbmod.init_db(app_env["db"])
     conn = dbmod.connect(app_env["db"])
@@ -372,6 +403,10 @@ def test_all_slice5_and_6_endpoints_empty_db(app_env):
     r = client.get("/api/advice")
     assert r.status_code == 200
     assert r.json() == []
+
+    r = client.get("/api/flows")
+    assert r.status_code == 200
+    assert r.json() is None
 
     r = client.get("/api/transactions")
     assert r.status_code == 200

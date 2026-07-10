@@ -49,6 +49,32 @@ groceries      = "600.00"
 dining         = "250.00"
 subscriptions  = "60.00"
 
+[category_groups]                      # cash-flow Sankey grouping: category -> group.
+# Display-only; unmapped categories (and uncategorized txns) fall into "Other".
+rent          = "Housing"
+utilities     = "Housing"
+insurance     = "Housing"
+groceries     = "Food"
+dining        = "Food"
+alcohol       = "Food"
+shopping      = "Shopping"
+subscriptions = "Shopping"
+transport     = "Transport"
+travel        = "Travel"
+health        = "Health"
+personal-care = "Health"
+pets          = "Health"
+vaping        = "Vices"
+cannabis      = "Vices"
+entertainment = "Fun"
+education      = "Education"
+loans         = "Financial"
+fees          = "Financial"
+fines         = "Financial"
+cash          = "Financial"
+investment    = "Financial"
+donations     = "Financial"
+
 [[goals]]                              # the "real joy" fund(s)
 # SEED ONLY. `finance init` creates this goal the first time it sees the name, then
 # never touches it again -- the app owns it from then on. Add, edit, and archive goals

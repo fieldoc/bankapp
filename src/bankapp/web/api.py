@@ -86,6 +86,18 @@ def get_spend(
     return [dataclasses.asdict(r) for r in rows]
 
 
+@router.get("/api/flows")
+def get_flows(
+    request: Request,
+    month: Optional[str] = None,
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    """One month's cash-flow Sankey (dominant currency only). null if no activity."""
+    month = month or date.today().strftime("%Y-%m")
+    mf = analytics.month_flows(conn, month, request.app.state.cfg.category_groups)
+    return dataclasses.asdict(mf) if mf else None
+
+
 @router.get("/api/subscriptions")
 def get_subscriptions(conn: sqlite3.Connection = Depends(get_conn)) -> list:
     return [dataclasses.asdict(r) for r in advisor.subscriptions_from_db(conn)]

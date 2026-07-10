@@ -120,6 +120,7 @@ section.block > h2 {
 /* ---------- charts ---------- */
 .chart-wrap { position: relative; height: 300px; }
 .chart-wrap.short { height: 240px; }
+.chart-wrap.tall { height: 520px; }   /* cash-flow sankey: ~24 leaf nodes need the room */
 
 /* ---------- tables ---------- */
 table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
