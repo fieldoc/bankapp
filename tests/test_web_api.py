@@ -646,3 +646,118 @@ def test_serve_busy_port_prints_friendly_message_and_exits_1(app_env, capsys):
         assert "Could not bind port" in capsys.readouterr().out
     finally:
         holder.close()
+
+
+# ---- goal CRUD routes -------------------------------------------------------
+
+def _goals_client(app_env):
+    dbmod.init_db(app_env["db"])
+    return _client(app_env)
+
+
+def _goal_body(**kw):
+    b = {"name": "trip", "target": "3000.00", "currency": "CAD",
+         "start_date": "2026-01-01", "target_date": "2026-12-31",
+         "allocation_pct": 100, "note": None}
+    b.update(kw)
+    return b
+
+
+def test_meta_exposes_known_currencies(app_env):
+    client = _goals_client(app_env)
+    body = client.get("/api/meta").json()
+    assert body["known_currencies"] == ["BTC", "CAD", "USD"]
+    # the data-derived map is a separate key and keeps its shape
+    assert isinstance(body["currencies"], dict)
+
+
+def test_create_goal_then_list(app_env):
+    client = _goals_client(app_env)
+    r = client.post("/api/goals", json=_goal_body())
+    assert r.status_code == 200, r.text
+    gid = r.json()["id"]
+    rows = client.get("/api/goals").json()
+    assert [g["name"] for g in rows] == ["trip"]
+    assert rows[0]["id"] == gid
+    assert rows[0]["target_minor"] == 300000  # "3000.00" CAD -> minor units
+
+
+def test_create_goal_rejects_bad_money(app_env):
+    client = _goals_client(app_env)
+    r = client.post("/api/goals", json=_goal_body(target="3000.999"))
+    assert r.status_code == 400
+    assert "precision" in r.json()["detail"]
+
+
+def test_create_goal_rejects_unknown_currency(app_env):
+    client = _goals_client(app_env)
+    r = client.post("/api/goals", json=_goal_body(currency="XYZ"))
+    assert r.status_code == 400
+    assert "unknown currency" in r.json()["detail"]
+
+
+def test_create_goal_duplicate_name_conflicts(app_env):
+    client = _goals_client(app_env)
+    client.post("/api/goals", json=_goal_body(allocation_pct=50))
+    r = client.post("/api/goals", json=_goal_body(allocation_pct=50))
+    assert r.status_code == 409
+    assert "already exists" in r.json()["detail"]
+
+
+def test_create_goal_allocation_breach_is_400_with_headroom(app_env):
+    client = _goals_client(app_env)
+    client.post("/api/goals", json=_goal_body(name="a", allocation_pct=85))
+    r = client.post("/api/goals", json=_goal_body(name="b", allocation_pct=20))
+    assert r.status_code == 400
+    assert "CAD is 85% allocated" in r.json()["detail"]
+    assert "at most 15%" in r.json()["detail"]
+
+
+def test_create_goal_cad_and_usd_each_100_pct(app_env):
+    client = _goals_client(app_env)
+    assert client.post("/api/goals", json=_goal_body(name="c", currency="CAD")).status_code == 200
+    r = client.post("/api/goals", json=_goal_body(name="u", currency="USD"))
+    assert r.status_code == 200, r.text
+
+
+def test_update_goal_renames(app_env):
+    client = _goals_client(app_env)
+    gid = client.post("/api/goals", json=_goal_body()).json()["id"]
+    r = client.put(f"/api/goals/{gid}", json=_goal_body(name="safari"))
+    assert r.status_code == 200, r.text
+    assert client.get("/api/goals").json()[0]["name"] == "safari"
+
+
+def test_update_unknown_goal_is_404(app_env):
+    client = _goals_client(app_env)
+    assert client.put("/api/goals/999", json=_goal_body()).status_code == 404
+
+
+def test_archive_and_unarchive_round_trip(app_env):
+    client = _goals_client(app_env)
+    gid = client.post("/api/goals", json=_goal_body()).json()["id"]
+
+    assert client.post(f"/api/goals/{gid}/archive").status_code == 200
+    assert client.get("/api/goals").json() == []
+
+    archived = client.get("/api/goals", params={"include_archived": True}).json()
+    assert [g["name"] for g in archived] == ["trip"]
+    assert archived[0]["active"] is False
+
+    assert client.post(f"/api/goals/{gid}/unarchive").status_code == 200
+    assert len(client.get("/api/goals").json()) == 1
+
+
+def test_unarchive_allocation_breach_is_400(app_env):
+    client = _goals_client(app_env)
+    gid = client.post("/api/goals", json=_goal_body(name="old")).json()["id"]
+    client.post(f"/api/goals/{gid}/archive")
+    client.post("/api/goals", json=_goal_body(name="new"))
+    r = client.post(f"/api/goals/{gid}/unarchive")
+    assert r.status_code == 400
+    assert "allocated" in r.json()["detail"]
+
+
+def test_archive_unknown_goal_is_404(app_env):
+    client = _goals_client(app_env)
+    assert client.post("/api/goals/999/archive").status_code == 404

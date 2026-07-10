@@ -57,3 +57,14 @@ def test_share_split_sums_to_total():
     my, rest = money.share_split(99999, 1, 3)
     assert my + rest == 99999
     assert my == 99999 // 3
+
+
+def test_known_currencies_is_the_exponent_allowlist():
+    assert money.known_currencies() == ("BTC", "CAD", "USD")
+
+
+def test_known_currencies_excludes_codes_exponent_for_silently_defaults():
+    # exponent_for("XYZ") returns the 2-place default rather than raising, so callers
+    # taking user input must gate on known_currencies() instead.
+    assert money.exponent_for("XYZ") == 2
+    assert "XYZ" not in money.known_currencies()

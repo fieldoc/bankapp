@@ -11,7 +11,17 @@
   <p class="page-sub">Where the money you keep is headed.</p>
 
   <section class="block">
+    <div class="block-head">
+      <button class="btn" id="new-goal">＋ New goal</button>
+    </div>
     <div class="panel" id="goals"></div>
+  </section>
+
+  <section class="block">
+    <details id="archived-block">
+      <summary>Archived</summary>
+      <div class="panel" id="archived"></div>
+    </details>
   </section>
 </main>
 
@@ -20,28 +30,212 @@
     await App.nav();
     await App.loadMeta();
 
-    const goals = await App.api("/api/goals");
-    const wrap = App.el("goals");
-    if (!goals.length) {
-      App.empty(wrap, "No goals configured. Add <code>[[goals]]</code> to your config.");
-      return;
+    const CURRENCIES = (App.meta && App.meta.known_currencies) || ["CAD"];
+    const expOf = (ccy) => (App.meta.currencies && App.meta.currencies[ccy] != null)
+      ? App.meta.currencies[ccy] : 2;
+
+    function paceBadge(g) {
+      if (g.pace === "behind") return { cls: "pace", txt: "behind" };
+      if (g.pace === "no_target") return { cls: "role", txt: "no target date" };
+      return { cls: "ok", txt: "on track" };
     }
-    wrap.innerHTML = "";
-    for (const g of goals) {
+
+    function actionBtn(cls, label, onclick) {
+      const b = document.createElement("button");
+      b.className = "btn mini ghost " + cls;
+      b.textContent = label;
+      b.onclick = onclick;
+      return b;
+    }
+
+    function goalRow(g, archived) {
       const pct = Math.max(0, Math.min(100, g.pct_complete || 0));
-      let paceCls = "ok", paceTxt = "on track";
-      if (g.pace === "behind") { paceCls = "pace"; paceTxt = "behind"; }
-      else if (g.pace === "no_target") { paceCls = "role"; paceTxt = "no target date"; }
-      const fill = g.pace === "behind" ? "pace" : "";
+      const badge = paceBadge(g);
       const row = document.createElement("div");
       row.className = "bar-row";
-      row.innerHTML =
-        `<div class="bar-head">` +
-        `<span class="cat">${App.esc(g.name)} <span class="badge ${paceCls}">${paceTxt}</span> <span class="badge role">${g.allocation_pct}% alloc</span></span>` +
-        `<span class="amt">${App.fmtMoney(g.funded_minor, g.currency)} / ${App.fmtMoney(g.target_minor, g.currency)} · ${pct.toFixed(0)}%</span>` +
-        `</div>` +
-        `<div class="bar-track"><div class="bar-fill ${fill}" style="width:${pct}%"></div></div>`;
-      wrap.appendChild(row);
+
+      const head = document.createElement("div");
+      head.className = "bar-head";
+      head.innerHTML =
+        `<span class="cat">${App.esc(g.name)} ` +
+        `<span class="badge ${badge.cls}">${badge.txt}</span> ` +
+        `<span class="badge role">${g.allocation_pct}% alloc</span></span>` +
+        `<span class="amt">${App.fmtMoney(g.funded_minor, g.currency)} / ` +
+        `${App.fmtMoney(g.target_minor, g.currency)} · ${pct.toFixed(0)}%</span>`;
+      row.appendChild(head);
+
+      const track = document.createElement("div");
+      track.className = "bar-track";
+      const fill = document.createElement("div");
+      fill.className = "bar-fill" + (g.pace === "behind" ? " pace" : "");
+      fill.style.width = pct + "%";
+      track.appendChild(fill);
+      row.appendChild(track);
+
+      const actions = document.createElement("div");
+      actions.className = "goal-actions";
+      if (archived) {
+        actions.appendChild(actionBtn("goal-unarchive", "Unarchive", async () => {
+          // Unarchiving re-spends allocation, so the server can refuse with a 400.
+          try { await App.post(`/api/goals/${g.id}/unarchive`, {}); } catch (_) { return; }
+          App.notice(`Restored ${g.name}`);
+          render();
+        }));
+      } else {
+        actions.appendChild(actionBtn("goal-edit", "Edit", () => openGoalModal(g)));
+        actions.appendChild(actionBtn("goal-archive", "Archive", async () => {
+          try { await App.post(`/api/goals/${g.id}/archive`, {}); } catch (_) { return; }
+          App.notice(`Archived ${g.name} — find it under Archived`);
+          render();
+        }));
+      }
+      row.appendChild(actions);
+      return row;
     }
+
+    async function render() {
+      const all = await App.api("/api/goals?include_archived=true");
+      const active = all.filter((g) => g.active);
+      const archived = all.filter((g) => !g.active);
+
+      const wrap = App.el("goals");
+      wrap.innerHTML = "";
+      if (!active.length) {
+        App.empty(wrap, "No goals yet. Use <b>＋ New goal</b> to add one.");
+      } else {
+        for (const g of active) wrap.appendChild(goalRow(g, false));
+      }
+
+      const block = App.el("archived-block");
+      block.style.display = archived.length ? "" : "none";
+      block.querySelector("summary").textContent = `Archived (${archived.length})`;
+      const arcWrap = App.el("archived");
+      arcWrap.innerHTML = "";
+      for (const g of archived) arcWrap.appendChild(goalRow(g, true));
+    }
+
+    function field(card, label, input, hint) {
+      const fld = document.createElement("div");
+      fld.className = "fld";
+      const lbl = document.createElement("label");
+      lbl.textContent = label;
+      fld.appendChild(lbl);
+      fld.appendChild(input);
+      if (hint) {
+        const h = document.createElement("div");
+        h.className = "hint";
+        h.textContent = hint;
+        fld.appendChild(h);
+      }
+      card.appendChild(fld);
+      return input;
+    }
+
+    // `existing` is a goal object when editing, null when creating.
+    function openGoalModal(existing) {
+      // A second click while one is open would stack overlays; only the top one is
+      // reachable and closing it reveals a stale twin.
+      if (document.querySelector(".modal")) return;
+      const overlay = document.createElement("div");
+      overlay.className = "modal";
+      const card = document.createElement("div");
+      card.className = "modal-card";
+      overlay.appendChild(card);
+
+      const title = document.createElement("h3");
+      title.textContent = existing ? "Edit goal" : "New goal";
+      card.appendChild(title);
+
+      const name = document.createElement("input");
+      name.value = existing ? existing.name : "";
+      name.placeholder = "e.g. japan-trip";
+      field(card, "Name", name);
+
+      const target = document.createElement("input");
+      target.value = existing
+        ? (existing.target_minor / Math.pow(10, expOf(existing.currency))).toFixed(expOf(existing.currency))
+        : "";
+      target.placeholder = "3000.00";
+      field(card, "Target", target);
+
+      const currency = document.createElement("select");
+      for (const c of CURRENCIES) {
+        const o = document.createElement("option");
+        o.value = c;
+        o.textContent = c;
+        if (existing ? existing.currency === c : c === "CAD") o.selected = true;
+        currency.appendChild(o);
+      }
+      field(card, "Currency", currency);
+
+      const start = document.createElement("input");
+      start.type = "date";
+      start.value = existing ? existing.start_date : new Date().toISOString().slice(0, 10);
+      field(card, "Start date", start, "Progress counts net savings from this date.");
+
+      const tgtDate = document.createElement("input");
+      tgtDate.type = "date";
+      tgtDate.value = existing && existing.target_date ? existing.target_date : "";
+      field(card, "Target date (optional)", tgtDate, "Leave blank for no pace tracking.");
+
+      const alloc = document.createElement("input");
+      alloc.type = "number";
+      alloc.min = "0";
+      alloc.max = "100";
+      alloc.value = existing ? existing.allocation_pct : "100";
+      field(card, "Allocation %", alloc,
+            "Share of that currency's net savings credited to this goal.");
+
+      const note = document.createElement("input");
+      note.value = existing && existing.note ? existing.note : "";
+      field(card, "Note (optional)", note);
+
+      const actions = document.createElement("div");
+      actions.className = "modal-actions";
+      const cancel = document.createElement("button");
+      cancel.className = "btn ghost";
+      cancel.textContent = "Cancel";
+      const save = document.createElement("button");
+      save.className = "btn";
+      save.textContent = "Save";
+      actions.appendChild(cancel);
+      actions.appendChild(save);
+      card.appendChild(actions);
+
+      const close = () => overlay.remove();
+      cancel.onclick = close;
+      overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
+
+      save.onclick = async () => {
+        const body = {
+          name: name.value,
+          target: target.value,
+          currency: currency.value,
+          start_date: start.value,
+          target_date: tgtDate.value || null,
+          allocation_pct: Number(alloc.value),
+          note: note.value || null,
+        };
+        save.disabled = true;
+        try {
+          // App.post surfaces the server's `detail` in the banner and rethrows, so a
+          // rejected save leaves the modal open with the reason visible on screen.
+          if (existing) await App.post(`/api/goals/${existing.id}`, body, "PUT");
+          else await App.post("/api/goals", body);
+        } catch (_) {
+          save.disabled = false;
+          return;
+        }
+        close();
+        App.notice(existing ? `Updated ${body.name}` : `Added ${body.name}`);
+        render();
+      };
+
+      document.body.appendChild(overlay);
+      name.focus();
+    }
+
+    App.el("new-goal").onclick = () => openGoalModal(null);
+    await render();
   })();
 </script>

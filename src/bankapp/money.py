@@ -26,6 +26,17 @@ def exponent_for(currency: str) -> int:
     return _EXPONENTS.get(currency.upper(), _DEFAULT_EXPONENT)
 
 
+def known_currencies() -> tuple[str, ...]:
+    """Currencies with a defined minor-unit exponent, sorted.
+
+    ``exponent_for`` silently falls back to two places for an unrecognized code, so
+    any caller accepting user input must gate on this allowlist first — otherwise a
+    typo'd currency yields a goal matching no transactions, reading as 0% funded
+    forever with no error raised anywhere.
+    """
+    return tuple(sorted(_EXPONENTS))
+
+
 def to_minor(value: Number, currency: str) -> int:
     """Convert a money value to signed integer minor units.
 

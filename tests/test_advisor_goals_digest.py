@@ -5,6 +5,7 @@ import pytest
 
 from bankapp import config as configmod
 from bankapp.config import GoalConfig
+from bankapp import goals as goalsmod
 from bankapp.report import advisor
 from tests.conftest import FIXTURES, insert_account, insert_raw_txn
 
@@ -25,7 +26,7 @@ def _income(conn, acct, amt, date_s="2026-01-05", dedup="i1"):
 def test_funding_math(conn):
     a = insert_account(conn, key="td-chequing")
     _income(conn, a, 100000, dedup="i1")   # +1000 net savings since start
-    advisor.upsert_goals(conn, [_goal(alloc=100)])
+    goalsmod.seed_from_config(conn, [_goal(alloc=100)])
     g = advisor.goals_status(conn, today=date(2026, 6, 1))[0]
     assert g.funded_minor == 100000
 
@@ -33,21 +34,21 @@ def test_funding_math(conn):
 def test_multi_goal_allocation_split(conn):
     a = insert_account(conn, key="td-chequing")
     _income(conn, a, 100000, dedup="i1")
-    advisor.upsert_goals(conn, [_goal(name="trip", alloc=60), _goal(name="camera", alloc=40)])
+    goalsmod.seed_from_config(conn, [_goal(name="trip", alloc=60), _goal(name="camera", alloc=40)])
     funded = {g.name: g.funded_minor for g in advisor.goals_status(conn, today=date(2026, 6, 1))}
     assert funded["trip"] == 60000
     assert funded["camera"] == 40000
 
 
 def test_allocation_over_100_rejected(conn):
-    with pytest.raises(advisor.AllocationError):
-        advisor.upsert_goals(conn, [_goal(name="a", alloc=60), _goal(name="b", alloc=60)])
+    with pytest.raises(goalsmod.AllocationError):
+        goalsmod.seed_from_config(conn, [_goal(name="a", alloc=60), _goal(name="b", alloc=60)])
 
 
 def test_pace_behind_and_on_track(conn):
     a = insert_account(conn, key="td-chequing")
     _income(conn, a, 10000, dedup="i1")  # small savings vs a 300000 target
-    advisor.upsert_goals(conn, [_goal(target=300000, start="2026-01-01", target_date="2026-12-31", alloc=100)])
+    goalsmod.seed_from_config(conn, [_goal(target=300000, start="2026-01-01", target_date="2026-12-31", alloc=100)])
     # near year-end, funded 10000 << expected -> behind
     assert advisor.goals_status(conn, today=date(2026, 12, 1))[0].pace == "behind"
 
@@ -55,11 +56,29 @@ def test_pace_behind_and_on_track(conn):
 def test_inactive_goal_excluded(conn):
     a = insert_account(conn, key="td-chequing")
     _income(conn, a, 100000, dedup="i1")
-    advisor.upsert_goals(conn, [_goal(name="trip")])
+    goalsmod.seed_from_config(conn, [_goal(name="trip")])
     conn.execute("UPDATE goals SET active = 0 WHERE name = 'trip'")
     conn.commit()
     assert advisor.goals_status(conn) == []
 
+
+def test_goals_status_exposes_edit_fields(conn):
+    goalsmod.seed_from_config(conn, [_goal()])
+    g = advisor.goals_status(conn, today=date(2026, 6, 1))[0]
+    assert g.id > 0
+    assert g.start_date == "2026-01-01"
+    assert g.target_date == "2026-12-31"
+    assert g.active is True
+
+
+def test_goals_status_include_archived(conn):
+    goalsmod.seed_from_config(conn, [_goal(name="trip")])
+    conn.execute("UPDATE goals SET active = 0 WHERE name = 'trip'")
+    conn.commit()
+    assert advisor.goals_status(conn) == []
+    archived = advisor.goals_status(conn, include_archived=True)
+    assert [g.name for g in archived] == ["trip"]
+    assert archived[0].active is False
 
 # ---- T10.2 digest ----
 

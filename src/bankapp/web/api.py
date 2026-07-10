@@ -1,5 +1,5 @@
-"""JSON API routes. Reads return plain dicts; the two write routes at the bottom
-(categorization) validate their bodies with Pydantic."""
+"""JSON API routes. Reads return plain dicts; the write routes at the bottom
+(categorization, goals) validate their bodies with Pydantic."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from bankapp import goals as goalsmod
+from bankapp import money
 from bankapp.classify import engine as classify
 from bankapp.report import advisor, analytics, briefs
 from bankapp.web.deps import get_conn
@@ -29,7 +31,13 @@ def _app_version() -> str:
 
 @router.get("/api/meta")
 def get_meta(conn: sqlite3.Connection = Depends(get_conn)) -> dict:
-    return {"app_version": _app_version(), **filter_options(conn)}
+    # `known_currencies` is the allowlist for goal creation; `currencies` (from
+    # filter_options) is the data-derived exponent map. They are not the same thing.
+    return {
+        "app_version": _app_version(),
+        "known_currencies": list(money.known_currencies()),
+        **filter_options(conn),
+    }
 
 
 @router.get("/api/status")
@@ -94,8 +102,13 @@ def get_leaks(
 
 
 @router.get("/api/goals")
-def get_goals(conn: sqlite3.Connection = Depends(get_conn)) -> list:
-    return [dataclasses.asdict(r) for r in advisor.goals_status(conn)]
+def get_goals(
+    include_archived: bool = False, conn: sqlite3.Connection = Depends(get_conn)
+) -> list:
+    return [
+        dataclasses.asdict(r)
+        for r in advisor.goals_status(conn, include_archived=include_archived)
+    ]
 
 
 @router.get("/api/advice/latest")
@@ -148,6 +161,16 @@ class OneOffIn(BaseModel):
     counterparty: Optional[str] = None
 
 
+class GoalIn(BaseModel):
+    name: str
+    target: str  # major units, e.g. "3000.00"; parsed by money.to_minor
+    currency: str = "CAD"
+    start_date: str
+    target_date: Optional[str] = None
+    allocation_pct: int = 100
+    note: Optional[str] = None
+
+
 @router.post("/api/rules")
 def post_rule(body: RuleIn, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
     """Add a categorization rule (generalizable) and apply it to ALL history. Rules
@@ -179,4 +202,77 @@ def post_one_off(
     classify.set_manual_category(
         conn, raw_txn_id, body.category, role_hint=body.role, counterparty=body.counterparty
     )
+    return {"ok": True}
+
+
+# ---- goals ------------------------------------------------------------------
+# The DB owns a goal's values; config.toml only seeds names that don't exist yet.
+# Removal archives (active = 0) rather than deletes, so a stale [[goals]] block
+# cannot resurrect a goal the user got rid of.
+
+
+def _target_minor(body: GoalIn) -> int:
+    """Parse the major-unit target. Currency is gated first: money.exponent_for
+    silently defaults an unknown code to 2 places, which would let a typo through
+    as a goal that matches no transactions and reads 0% funded forever."""
+    if body.currency not in money.known_currencies():
+        known = ", ".join(money.known_currencies())
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown currency {body.currency!r}; known currencies are {known}",
+        )
+    try:
+        return money.to_minor(body.target, body.currency)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _write(fn):
+    """Run a goals write, mapping its error tree onto HTTP status codes. The detail
+    string is user-facing: App.post lifts it straight into the page's error banner."""
+    try:
+        return fn()
+    except goalsmod.DuplicateName as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except goalsmod.NotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except goalsmod.GoalError as exc:  # ValidationError, AllocationError
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/api/goals")
+def post_goal(body: GoalIn, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    """Create an active goal."""
+    minor = _target_minor(body)
+    gid = _write(lambda: goalsmod.create(
+        conn, name=body.name, target_minor=minor, currency=body.currency,
+        start_date=body.start_date, target_date=body.target_date,
+        allocation_pct=body.allocation_pct, note=body.note,
+    ))
+    return {"id": gid}
+
+
+@router.put("/api/goals/{goal_id}")
+def put_goal(goal_id: int, body: GoalIn, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    """Full replace, including rename. Keyed on id so the name can change."""
+    minor = _target_minor(body)
+    _write(lambda: goalsmod.update(
+        conn, goal_id, name=body.name, target_minor=minor, currency=body.currency,
+        start_date=body.start_date, target_date=body.target_date,
+        allocation_pct=body.allocation_pct, note=body.note,
+    ))
+    return {"ok": True}
+
+
+@router.post("/api/goals/{goal_id}/archive")
+def post_goal_archive(goal_id: int, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    """Hide the goal; never deletes. Idempotent."""
+    _write(lambda: goalsmod.archive(conn, goal_id))
+    return {"ok": True}
+
+
+@router.post("/api/goals/{goal_id}/unarchive")
+def post_goal_unarchive(goal_id: int, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    """Restore the goal. Re-spends its allocation, so this can 400."""
+    _write(lambda: goalsmod.unarchive(conn, goal_id))
     return {"ok": True}

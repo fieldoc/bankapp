@@ -50,11 +50,16 @@ dining         = "250.00"
 subscriptions  = "60.00"
 
 [[goals]]                              # the "real joy" fund(s)
+# SEED ONLY. `finance init` creates this goal the first time it sees the name, then
+# never touches it again -- the app owns it from then on. Add, edit, and archive goals
+# on the Goals page. Editing the values below will NOT change a goal that exists, and
+# deleting this block will NOT remove one.
 name           = "example-trip"
 target         = "3000.00"
 start_date     = "2026-07-01"
 target_date    = "2027-02-01"
-allocation_pct = 100                   # share of monthly net savings credited to this goal
+allocation_pct = 100                   # share of THIS CURRENCY's net savings; active
+                                       # goals in one currency must total <= 100%
 
 [advisor]
 leak_threshold = "15.00"               # txns under this feed the leak report

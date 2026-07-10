@@ -19,12 +19,13 @@
   };
 
   // POST JSON to a write route. Surfaces server error detail via the banner and
-  // rethrows so callers can keep the modal open on failure.
-  App.post = async function (path, body) {
+  // rethrows so callers can keep the modal open on failure. `method` defaults to
+  // POST; pass "PUT" for full-replace routes.
+  App.post = async function (path, body, method) {
     let res;
     try {
       res = await fetch(path, {
-        method: "POST",
+        method: method || "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify(body || {}),
       });
