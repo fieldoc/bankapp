@@ -96,8 +96,9 @@ bash scripts/mac-app/build.sh      # builds + installs ~/Applications/BankApp.ap
 
 Then launch **BankApp** from Spotlight (⌘-Space), Finder, or the Dock. It behaves like a normal
 app: launching starts the dashboard (freeing port 8377 first, so a stale server from a previous
-run never blocks it), and quitting it (⌘-Q, or Dock → Quit) stops the server. Server output goes
-to `~/finance/logs/webapp.log`.
+run never blocks it), and quitting it (⌘-Q, or Dock → Quit) stops the server. Clicking its icon
+while it's already running re-opens the dashboard — and restarts the server first if it died.
+Server output goes to `~/finance/logs/webapp.log`.
 
 The app runs the **stable `~/BankApp` install**, not the worktree that built it, so it keeps
 working after the build directory is gone. Re-run `build.sh` to pick up launcher changes; it
