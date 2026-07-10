@@ -275,3 +275,49 @@ def test_seed_allows_100_pct_in_each_currency(conn):
 def test_seed_validates_fields(conn):
     with pytest.raises(goals.ValidationError):
         goals.seed_from_config(conn, [_cfg(target=0)])
+
+
+# ---- seed ledger: a config goal is seeded ONCE, ever ------------------------
+# Config seeds by name, but the app lets you rename. Without a ledger of names
+# already seeded, renaming a config goal makes the next `finance init` no longer
+# recognize it and re-insert the config version -- silently duplicating the goal,
+# or blowing the allocation cap when the two together exceed 100%.
+
+def test_seed_does_not_resurrect_a_renamed_goal(conn):
+    goals.seed_from_config(conn, [_cfg("example-trip", alloc=60)])
+    gid = goals.list_goals(conn)[0].id
+    goals.update(conn, gid, name="japan-trip", target_minor=420000, currency="CAD",
+                 start_date="2026-01-01", target_date="2026-12-31",
+                 allocation_pct=60, note=None)
+
+    assert goals.seed_from_config(conn, [_cfg("example-trip", alloc=60)]) == 0
+    assert [g.name for g in goals.list_goals(conn)] == ["japan-trip"]
+
+
+def test_seed_of_renamed_goal_does_not_break_the_allocation_cap(conn):
+    """The 120% failure that a rename used to cause in `finance init`."""
+    goals.seed_from_config(conn, [_cfg("example-trip", alloc=60)])
+    gid = goals.list_goals(conn)[0].id
+    goals.update(conn, gid, name="japan-trip", target_minor=300000, currency="CAD",
+                 start_date="2026-01-01", target_date="2026-12-31",
+                 allocation_pct=60, note=None)
+    goals.seed_from_config(conn, [_cfg("example-trip", alloc=60)])  # must not raise
+
+
+def test_seed_ledger_records_preexisting_names(conn):
+    """A goal already in the DB (seeded before the ledger existed) is adopted, not
+    re-inserted, and is remembered so a later rename is safe."""
+    _raw_insert(conn, "example-trip", 60)
+    assert goals.seed_from_config(conn, [_cfg("example-trip", alloc=60)]) == 0
+    gid = goals.list_goals(conn)[0].id
+    goals.update(conn, gid, name="renamed", target_minor=100000, currency="CAD",
+                 start_date="2026-01-01", target_date=None, allocation_pct=60, note=None)
+    assert goals.seed_from_config(conn, [_cfg("example-trip", alloc=60)]) == 0
+    assert [g.name for g in goals.list_goals(conn)] == ["renamed"]
+
+
+def test_seed_ledger_rolls_back_with_the_inserts(conn):
+    with pytest.raises(goals.AllocationError):
+        goals.seed_from_config(conn, [_cfg("a", 60), _cfg("b", 60)])
+    # ledger must not remember 'a'/'b', or a corrected config could never seed them
+    assert goals.seed_from_config(conn, [_cfg("a", 50), _cfg("b", 50)]) == 2

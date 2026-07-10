@@ -11,12 +11,16 @@ pools and a global cap would reject a legal pair.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import date
 from typing import Iterable, Optional
 
 from bankapp import money
+
+# meta key holding the JSON list of config goal names that have ever been seeded.
+_SEEDED_KEY = "goals_seeded"
 
 
 class GoalError(ValueError):
@@ -218,24 +222,40 @@ def unarchive(conn: sqlite3.Connection, goal_id: int) -> None:
         conn.execute("UPDATE goals SET active = 1 WHERE id = ?", (goal_id,))
 
 
-def seed_from_config(conn: sqlite3.Connection, goals: Iterable) -> int:
-    """Insert config goals whose names don't exist yet; leave existing rows alone.
+def _seeded_names(conn: sqlite3.Connection) -> set[str]:
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (_SEEDED_KEY,)).fetchone()
+    return set(json.loads(row[0])) if row else set()
 
-    Insert-if-absent (not upsert) is what lets a UI edit survive `finance init` and
-    keeps an archived goal archived. A name collision here is the expected case, so
-    check_name_free is deliberately NOT called. The per-currency cap is checked once
-    after all inserts, over the resulting active set; the enclosing transaction rolls
-    the inserts back if it fails.
+
+def seed_from_config(conn: sqlite3.Connection, goals: Iterable) -> int:
+    """Insert each config goal exactly once, ever. Existing rows are left alone.
+
+    Seed-once (not upsert) is what lets a UI edit survive `finance init` and keeps an
+    archived goal archived.
+
+    Identity is tracked by a ledger of names already seeded, NOT by looking for the
+    name in the goals table, because the app lets you rename. Renaming a config goal
+    would otherwise make the next `finance init` fail to recognize it and re-insert
+    the config version -- silently duplicating the goal, or blowing the per-currency
+    cap when the two together exceed 100%.
+
+    A name collision is therefore an expected case, so check_name_free is deliberately
+    NOT called. The per-currency cap is checked once after all inserts, over the
+    resulting active set; the enclosing transaction rolls both the inserts and the
+    ledger update back if it fails.
 
     Returns the number of goals actually inserted.
     """
     inserted = 0
     with conn:
-        for g in goals:
+        seeded = _seeded_names(conn)
+        pending = [g for g in goals if g.name not in seeded]
+        for g in pending:
             check_fields(name=g.name, target_minor=g.target_minor, currency=g.currency,
                          start_date=g.start_date, target_date=g.target_date,
                          allocation_pct=g.allocation_pct)
             # rowcount is unreliable for ON CONFLICT DO NOTHING; total_changes is not.
+            # A pre-ledger DB may already hold the row: adopt it rather than insert.
             before = conn.total_changes
             conn.execute(
                 _INSERT + " ON CONFLICT(name) DO NOTHING",
@@ -243,7 +263,16 @@ def seed_from_config(conn: sqlite3.Connection, goals: Iterable) -> int:
                  g.allocation_pct, g.note),
             )
             inserted += conn.total_changes - before
-        for currency in sorted({g.currency for g in goals}):
+        if pending:
+            # Raw SQL, not db.set_meta: that opens its own `with conn:`, which would
+            # commit mid-transaction and defeat the rollback below.
+            names = json.dumps(sorted(seeded | {g.name for g in pending}))
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (_SEEDED_KEY, names),
+            )
+        for currency in sorted({g.currency for g in pending}):
             headroom = allocation_headroom(conn, currency)
             if headroom < 0:
                 raise AllocationError(
