@@ -50,3 +50,40 @@ def test_review_export_markdown(app_env):
     r = runner.invoke(app, ["review", "export", "--format", "markdown"])
     assert "# Review queue" in r.output
     assert "netflix" in r.output
+
+
+# ---- rules rm / set-counterparty (CLI wiring) ---------------------------------
+
+def test_rules_rm_removes_and_recategorizes(app_env):
+    _ingest_visa(app_env)
+    runner.invoke(app, ["rules", "add", "--pattern", "netflix", "--category", "subscriptions"])
+    runner.invoke(app, ["categorize"])
+    assert runner.invoke(app, ["review", "count"]).output.strip() == "2"
+    r = runner.invoke(app, ["rules", "rm", "--pattern", "netflix"])
+    assert r.exit_code == 0
+    assert "removed" in r.output.lower()
+    # the netflix txn returns to the review queue without a manual recompute step
+    assert runner.invoke(app, ["review", "count"]).output.strip() == "3"
+
+
+def test_rules_rm_missing_pattern_fails(app_env):
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["rules", "rm", "--pattern", "no-such-rule"])
+    assert r.exit_code == 1
+    assert "No such rule" in r.output
+
+
+def test_rules_set_counterparty_roundtrip(app_env):
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["rules", "add", "--pattern", "claude.ai", "--category", "subscriptions"])
+    r = runner.invoke(app, ["rules", "set-counterparty", "--pattern", "claude.ai",
+                            "--counterparty", "anthropic"])
+    assert r.exit_code == 0
+    assert "anthropic" in runner.invoke(app, ["rules", "list"]).output
+
+
+def test_rules_set_counterparty_missing_fails(app_env):
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["rules", "set-counterparty", "--pattern", "ghost", "--counterparty", "x"])
+    assert r.exit_code == 1
+    assert "No such rule" in r.output

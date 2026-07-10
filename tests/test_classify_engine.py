@@ -194,3 +194,53 @@ def test_manual_override_leaves_review_queue(conn):
     assert review.count(conn) == 1
     engine.set_manual_category(conn, tid, "misc")
     assert review.count(conn) == 0
+
+
+# ---- rules rm / set-counterparty (engine) ------------------------------------
+
+def test_remove_rule_deletes_and_recompute_unlabels(conn):
+    aid = insert_account(conn)
+    tid = insert_raw_txn(conn, aid, description_norm="netflix.com monthly", dedup_key="sha256:rm1")
+    engine.add_rule(conn, "substring", "netflix", "subscriptions")
+    engine.categorize(conn)
+    assert engine.remove_rule(conn, "substring", "netflix") is True
+    engine.categorize(conn, recompute_all=True)
+    row = conn.execute("SELECT category FROM txn_interp WHERE raw_txn_id = ?", (tid,)).fetchone()
+    assert row is None or row["category"] is None  # label gone with the rule
+
+
+def test_remove_rule_missing_returns_false(conn):
+    assert engine.remove_rule(conn, "substring", "no-such-rule") is False
+
+
+def test_remove_rule_normalizes_substring_pattern(conn):
+    """rm must find the row through the same store-time normalization as add:
+    case-insensitive, internal whitespace collapsed. A leading/trailing space is
+    SEMANTIC (the word-boundary guard, e.g. "pho ") and must NOT be equated."""
+    engine.add_rule(conn, "substring", "NetFlix   HD", "subscriptions")
+    assert engine.remove_rule(conn, "substring", "netflix hd") is True
+    engine.add_rule(conn, "substring", "pho ", "dining")   # trailing space on purpose
+    assert engine.remove_rule(conn, "substring", "pho") is False   # different pattern
+    assert engine.remove_rule(conn, "substring", "pho ") is True
+
+
+def test_set_rule_counterparty_flows_to_txns(conn):
+    aid = insert_account(conn)
+    tid = insert_raw_txn(conn, aid, description_norm="claude.ai subscription", dedup_key="sha256:cp1")
+    engine.add_rule(conn, "substring", "claude.ai", "subscriptions")
+    engine.categorize(conn)
+    assert engine.set_rule_counterparty(conn, "substring", "claude.ai", "anthropic") is True
+    engine.categorize(conn, recompute_all=True)
+    row = conn.execute("SELECT counterparty FROM txn_interp WHERE raw_txn_id = ?", (tid,)).fetchone()
+    assert row["counterparty"] == "anthropic"
+
+
+def test_set_rule_counterparty_missing_returns_false(conn):
+    assert engine.set_rule_counterparty(conn, "substring", "ghost", "x") is False
+
+
+def test_set_rule_counterparty_none_clears(conn):
+    engine.add_rule(conn, "substring", "acme", "shopping", counterparty="acme corp")
+    assert engine.set_rule_counterparty(conn, "substring", "acme", None) is True
+    row = conn.execute("SELECT counterparty FROM rules WHERE pattern='acme'").fetchone()
+    assert row["counterparty"] is None

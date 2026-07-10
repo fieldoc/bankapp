@@ -135,6 +135,46 @@ def add_rule(
     return conn.total_changes > before
 
 
+def remove_rule(conn: sqlite3.Connection, match_kind: str, pattern: str) -> bool:
+    """Delete a rule by its (match_kind, pattern) identity. Returns True if a row went.
+
+    Substring patterns are looked up through the same store-time normalization as
+    add_rule, so callers can pass the pattern as they typed it. Deleting a rule does
+    not touch txn_interp — run categorize(recompute_all=True) afterwards to drop the
+    labels that no longer match (manual overrides survive that, by design).
+    """
+    if match_kind == "substring":
+        pattern = normalize_substring_pattern(pattern)
+    row = conn.execute(
+        "SELECT id FROM rules WHERE match_kind = ? AND pattern = ?", (match_kind, pattern)
+    ).fetchone()
+    if row is None:
+        return False
+    with conn:  # txn_interp.rule_id references rules(id): detach before deleting
+        conn.execute("UPDATE txn_interp SET rule_id = NULL WHERE rule_id = ?", (row["id"],))
+        conn.execute("DELETE FROM rules WHERE id = ?", (row["id"],))
+    return True
+
+
+def set_rule_counterparty(
+    conn: sqlite3.Connection, match_kind: str, pattern: str, counterparty: Optional[str]
+) -> bool:
+    """Set (or clear, with None) a rule's counterparty. Returns True if the rule exists.
+
+    counterparty is the canonical merchant identity used to merge vendor renames in
+    the subscriptions/leaks reports. Flows into txn_interp on the next categorize
+    (recompute_all=True re-stamps existing matches).
+    """
+    if match_kind == "substring":
+        pattern = normalize_substring_pattern(pattern)
+    with conn:
+        cur = conn.execute(
+            "UPDATE rules SET counterparty = ? WHERE match_kind = ? AND pattern = ?",
+            (counterparty, match_kind, pattern),
+        )
+    return cur.rowcount > 0
+
+
 def upsert_seed_rules(conn: sqlite3.Connection, seed_patterns) -> int:
     """Upsert transfer seed rules from config [transfers].seed_patterns."""
     added = 0

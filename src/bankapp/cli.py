@@ -407,10 +407,48 @@ def rules_list() -> None:
         typer.echo("No rules.")
         return
     for r in rules:
+        cp = f" counterparty={r.counterparty}" if r.counterparty else ""
         typer.echo(
             f"[{r.priority:>3}] {r.match_kind:9} {r.pattern!r} -> "
-            f"category={r.category} role={r.role_hint}"
+            f"category={r.category} role={r.role_hint}{cp}"
         )
+
+
+@rules_app.command("rm")
+def rules_rm(
+    kind: str = typer.Option("substring", "--kind", help="substring | regex"),
+    pattern: str = typer.Option(..., "--pattern", help="The pattern exactly as `rules list` shows it."),
+) -> None:
+    """Remove a rule and re-categorize: labels that only existed because of this rule
+    are dropped (manual overrides survive)."""
+    from bankapp.classify import engine as classify
+
+    _, conn = _load()
+    if not classify.remove_rule(conn, kind, pattern):
+        typer.echo(f"No such rule: {kind} {pattern!r}")
+        raise typer.Exit(code=1)
+    n = classify.categorize(conn, recompute_all=True)
+    typer.echo(f"Rule removed; {n} transaction(s) re-categorized.")
+
+
+@rules_app.command("set-counterparty")
+def rules_set_counterparty(
+    kind: str = typer.Option("substring", "--kind", help="substring | regex"),
+    pattern: str = typer.Option(..., "--pattern", help="The pattern exactly as `rules list` shows it."),
+    counterparty: str = typer.Option(..., "--counterparty",
+                                     help="Canonical merchant name (merges vendor renames in "
+                                          "subscriptions/leaks). Pass '' to clear."),
+) -> None:
+    """Set a rule's counterparty and re-stamp matching transactions."""
+    from bankapp.classify import engine as classify
+
+    _, conn = _load()
+    if not classify.set_rule_counterparty(conn, kind, pattern, counterparty or None):
+        typer.echo(f"No such rule: {kind} {pattern!r}")
+        raise typer.Exit(code=1)
+    n = classify.categorize(conn, recompute_all=True)
+    typer.echo(f"Counterparty {'cleared' if not counterparty else 'set to ' + counterparty!r}; "
+               f"{n} transaction(s) re-stamped.")
 
 
 @review_app.command("count")
