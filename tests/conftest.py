@@ -74,6 +74,10 @@ groceries = "600.00"
 dining = "250.00"
 subscriptions = "60.00"
 
+[category_groups]
+groceries = "Food"
+dining = "Food"
+
 [[goals]]
 name = "example-trip"
 target = "3000.00"

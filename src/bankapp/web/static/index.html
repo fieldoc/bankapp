@@ -4,6 +4,7 @@
 <title>BankApp — Overview</title>
 <link rel="stylesheet" href="/app.css" />
 <script src="/vendor/chart.umd.js"></script>
+<script src="/vendor/chartjs-chart-sankey.min.js"></script>
 <script src="/app.js"></script>
 
 <main>
@@ -13,6 +14,15 @@
   <section class="block">
     <h2>Net worth</h2>
     <div class="grid cols-3" id="nw-cards"></div>
+  </section>
+
+  <section class="block">
+    <h2>Cash flow</h2>
+    <div class="filters">
+      <div class="fld"><label>Month</label><select id="flow-month"></select></div>
+    </div>
+    <div class="panel" id="flow-panel"><div class="chart-wrap tall"><canvas id="flow-chart"></canvas></div></div>
+    <p class="page-sub" id="flow-note">&nbsp;</p>
   </section>
 
   <section class="block">
@@ -43,6 +53,97 @@
     await App.nav();
     await App.loadMeta();
     App.chartTheme();
+
+    // ---- cash-flow sankey ----------------------------------------------------
+    // income sources -> Income -> category groups (+ Savings) -> categories.
+    // Node keys are prefixed (src:/inc:/grp:/sav:/cat:) — the prefix picks the
+    // column, and colour follows the group entity (stable across months), not rank.
+    (function initFlowSankey() {
+      const COL = { "src": 0, "inc": 1, "grp": 2, "sav": 2, "cat": 3 };
+      const months = App.meta.months || []; // newest-first
+      const sel = App.el("flow-month");
+      for (const m of months) {
+        const o = document.createElement("option");
+        o.value = o.textContent = m;
+        sel.appendChild(o);
+      }
+      // Default to the last COMPLETE month: newest month strictly before this one.
+      const thisMonth = new Date().toISOString().slice(0, 7);
+      sel.value = months.find((m) => m < thisMonth) || months[0] || "";
+
+      let flowChart = null;
+      sel.onchange = loadFlows;
+      if (sel.value) loadFlows();
+      else App.empty(App.el("flow-panel"), "No transactions yet — run <code>finance refresh</code>.");
+
+      async function loadFlows() {
+        const flows = await App.api("/api/flows?month=" + encodeURIComponent(sel.value));
+        if (flowChart) { flowChart.destroy(); flowChart = null; }
+        const panel = App.el("flow-panel");
+        App.el("flow-note").innerHTML = "&nbsp;";
+        if (!flows || !flows.links.length) {
+          App.empty(panel, "No cash flow for " + sel.value + ".");
+          return;
+        }
+        panel.innerHTML = `<div class="chart-wrap tall"><canvas id="flow-chart"></canvas></div>`;
+
+        // One palette hue per group, keyed by group NAME (sorted) so a given group
+        // keeps its colour when you change months. Income side and Savings use the
+        // semantic money-in / accent tokens.
+        const pal = App.palette();
+        const groups = [...new Set(Object.keys(flows.labels)
+          .filter((k) => k.startsWith("grp:")))].sort();
+        const groupColor = {};
+        groups.forEach((g, i) => { groupColor[g] = pal[i % pal.length]; });
+        const catToGroup = {};
+        for (const l of flows.links) {
+          if (l.source.startsWith("grp:")) catToGroup[l.target] = l.source;
+        }
+        const nodeColor = (key) => {
+          if (key.startsWith("src:") || key === "inc:Income") return App.cssVar("--pos");
+          if (key === "sav:Savings") return App.cssVar("--accent");
+          if (key.startsWith("grp:")) return groupColor[key] || App.cssVar("--muted");
+          if (key.startsWith("cat:")) return groupColor[catToGroup[key]] || App.cssVar("--muted");
+          return App.cssVar("--muted");
+        };
+        const column = {};
+        for (const k of Object.keys(flows.labels)) column[k] = COL[k.slice(0, 3)];
+
+        flowChart = new Chart(App.el("flow-chart"), {
+          type: "sankey",
+          data: { datasets: [{
+            data: flows.links.map((l) => ({ from: l.source, to: l.target, flow: l.flow_minor })),
+            labels: flows.labels,
+            column,
+            size: "max",
+            colorMode: "gradient",
+            colorFrom: (c) => nodeColor(c.dataset.data[c.dataIndex].from),
+            colorTo: (c) => nodeColor(c.dataset.data[c.dataIndex].to),
+            borderWidth: 0,
+          }]},
+          options: {
+            plugins: {
+              legend: { display: false },
+              tooltip: { callbacks: {
+                label: (c) => {
+                  const d = c.dataset.data[c.dataIndex];
+                  return `${flows.labels[d.from]} → ${flows.labels[d.to]}: ${App.fmtMoney(d.flow, flows.currency)}`;
+                },
+              } },
+            },
+          },
+        });
+
+        const notes = [];
+        if (flows.savings_minor < 0) {
+          notes.push(`Overspent by ${App.fmtMoney(-flows.savings_minor, flows.currency)} this month`);
+        }
+        if (flows.other_currencies && flows.other_currencies.length) {
+          notes.push(`Also active: ${flows.other_currencies.join(", ")} (not shown)`);
+        }
+        App.el("flow-note").textContent = notes.join(" · ") || " ";
+      }
+    })();
 
     const digest = await App.api("/api/digest");
     App.el("asof").textContent = `as of ${digest.as_of}`;

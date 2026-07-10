@@ -75,6 +75,22 @@ def test_money_strings_to_minor(monkeypatch):
     assert goal.target_minor == 300000
 
 
+def test_category_groups_parsed(monkeypatch):
+    monkeypatch.delenv("FINANCE_DB", raising=False)
+    c = cfg.load_config(EXAMPLE)
+    assert c.category_groups["rent"] == "Housing"
+    assert c.category_groups["groceries"] == "Food"
+    assert c.category_groups["loans"] == "Financial"
+
+
+def test_category_groups_missing_section_empty(tmp_path, monkeypatch):
+    monkeypatch.delenv("FINANCE_DB", raising=False)
+    p = tmp_path / "config.toml"
+    p.write_text('timezone = "America/Vancouver"\ndb_path = "/tmp/x.db"\n')
+    c = cfg.load_config(p)
+    assert c.category_groups == {}
+
+
 def test_transfers_section(monkeypatch):
     monkeypatch.delenv("FINANCE_DB", raising=False)
     c = cfg.load_config(EXAMPLE)

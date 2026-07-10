@@ -62,6 +62,25 @@ def test_chartjs_vendored(app_env):
     assert len(r.content) > 100_000, f"chart.umd.js too small: {len(r.content)} bytes"
 
 
+def test_sankey_plugin_vendored(app_env):
+    client = _client(app_env)
+    r = client.get("/vendor/chartjs-chart-sankey.min.js")
+    assert r.status_code == 200
+    # Guards both packaging (asset ships) and that the vendor step actually ran.
+    assert len(r.content) > 10_000, f"sankey plugin too small: {len(r.content)} bytes"
+    assert b"sankey" in r.content
+
+
+def test_index_has_flow_sankey(app_env):
+    """The Overview page must ship the cash-flow Sankey: plugin, hooks, and API path."""
+    client = _client(app_env)
+    html = client.get("/").text
+    assert "chartjs-chart-sankey.min.js" in html   # plugin loaded
+    assert "flow-month" in html                    # month picker hook
+    assert "flow-chart" in html                    # canvas hook
+    assert "/api/flows" in html                    # data source
+
+
 def test_transactions_page_has_categorize_ui(app_env):
     """The Transactions page must ship the in-UI categorize entry point + modal wiring."""
     client = _client(app_env)
