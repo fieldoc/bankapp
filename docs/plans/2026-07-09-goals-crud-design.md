@@ -98,8 +98,12 @@ definitions of a legal goal.
 
 - `upsert_goals` is removed; its logic moves to `goals.seed_from_config` and
   changes from `ON CONFLICT DO UPDATE` to `ON CONFLICT DO NOTHING`.
-- `AllocationError` is re-exported from `goals`, because
-  `tests/test_advisor_goals_digest.py` imports it as `advisor.AllocationError`.
+- `AllocationError` moves to `goals.py`. **No back-compat re-export.** (Corrected
+  2026-07-09: an earlier draft of this spec proposed re-exporting it so
+  `tests/test_advisor_goals_digest.py` would pass unmodified. That was wrong — the
+  test calls `advisor.upsert_goals` directly at five call sites, which a re-exported
+  exception cannot save. There are only six call sites of the moved names in the
+  whole repo, all first-party, so they are simply updated.)
 - `goals_status` stays (it is a report, not a mutation) and gains `id`,
   `start_date`, `target_date`, `note`, and `active` on `GoalStatus`. These
   additions are purely additive: no key is removed, so the advisor skill's digest
@@ -138,7 +142,9 @@ human-readable sentence shown to the user.
   `money.known_currencies()` surfaced via `/api/meta`), start date, target date
   (optional), allocation %, note.
 - `App.post` already lifts the server's `detail` into the error banner and
-  rethrows, so on a 400 the modal stays open with the reason visible.
+  rethrows, so on a 400 the modal stays open with the reason visible. It gains an
+  optional third `method` argument (defaulting to `POST`) so the edit path can send
+  `PUT`; every existing caller is unaffected.
 
 ### `cli.py`
 
@@ -167,6 +173,10 @@ column is `UNIQUE`), excluding `exclude_id`.
 `check_allocation`: `pct <= allocation_headroom(conn, currency, exclude_id)`.
 Excluding self is required so that editing a 100% goal down to 90% does not
 collide with its own stored value.
+
+`unarchive` also runs `check_allocation`. Restoring a goal re-spends its
+allocation, and the currency's pool may have been claimed by another goal while it
+was archived. Without this, unarchiving could push a currency past 100%.
 
 The allocation error names the headroom, e.g.
 `"CAD is 85% allocated; this goal can take at most 15%."`
@@ -205,9 +215,17 @@ name; `include_archived=true` returns archived rows.
 
 `tests/test_web_static.py`: `goals.html` serves and contains the new-goal hook.
 
-Existing `tests/test_advisor_goals_digest.py` and `tests/test_cli_advisor.py`
-must pass unmodified. They are the regression contract that the
-`AllocationError` re-export and the additive `GoalStatus` keys exist to preserve.
+`tests/test_cli_advisor.py` must pass unmodified.
+
+`tests/test_advisor_goals_digest.py` needs its six `advisor.upsert_goals` /
+`advisor.AllocationError` call sites repointed at `goals`, and nothing else. Its
+assertions are unchanged: all five seed calls run against a fresh in-memory DB, so
+none exercises the old `DO UPDATE` branch and `DO NOTHING` is behaviourally
+identical for them.
+
+`test_digest_json_keys_stable` is not coupled to the extended `GoalStatus`, because
+`digest()` builds its `goals` payload from an explicit field whitelist rather than
+`dataclasses.asdict`.
 
 Note: running pytest from a worktree requires `PYTHONPATH` be set to the
 worktree's `src/`.
