@@ -354,34 +354,12 @@ def leaks_from_db(conn: sqlite3.Connection, threshold_minor: int) -> list[LeakRo
 
 
 # ---- T10.1 goals ------------------------------------------------------------
-
-class AllocationError(ValueError):
-    """Active goal allocations exceed 100% of the savings pool."""
-
-
-def upsert_goals(conn: sqlite3.Connection, goals) -> int:
-    """Upsert config goals by name. Validates total active allocation <= 100%."""
-    total = sum(g.allocation_pct for g in goals)
-    if total > 100:
-        raise AllocationError(f"goal allocations total {total}% > 100%")
-    n = 0
-    with conn:
-        for g in goals:
-            conn.execute(
-                """INSERT INTO goals(name, target_minor, currency, start_date, target_date, allocation_pct, note, active)
-                   VALUES (?,?,?,?,?,?,?,1)
-                   ON CONFLICT(name) DO UPDATE SET
-                     target_minor=excluded.target_minor, currency=excluded.currency,
-                     start_date=excluded.start_date, target_date=excluded.target_date,
-                     allocation_pct=excluded.allocation_pct, note=excluded.note""",
-                (g.name, g.target_minor, g.currency, g.start_date, g.target_date, g.allocation_pct, g.note),
-            )
-            n += 1
-    return n
+# Goal WRITES live in bankapp.goals (this module reads). See goals.seed_from_config.
 
 
 @dataclass(frozen=True)
 class GoalStatus:
+    id: int
     name: str
     target_minor: int
     funded_minor: int
@@ -389,6 +367,10 @@ class GoalStatus:
     allocation_pct: int
     pct_complete: float
     pace: str  # 'on_track' | 'behind' | 'no_target'
+    start_date: str
+    target_date: Optional[str]
+    note: Optional[str]
+    active: bool
 
 
 def _net_since(conn: sqlite3.Connection, start_date: str, currency: str) -> int:
@@ -399,14 +381,20 @@ def _net_since(conn: sqlite3.Connection, start_date: str, currency: str) -> int:
     return row[0] or 0
 
 
-def goals_status(conn: sqlite3.Connection, today: Optional[date] = None) -> list[GoalStatus]:
+def goals_status(
+    conn: sqlite3.Connection,
+    today: Optional[date] = None,
+    include_archived: bool = False,
+) -> list[GoalStatus]:
     today = today or date.today()
-    rows = conn.execute(
-        """SELECT name, target_minor, currency, start_date, target_date, allocation_pct
-           FROM goals WHERE active = 1 ORDER BY name"""
-    ).fetchall()
+    sql = """SELECT id, name, target_minor, currency, start_date, target_date,
+                    allocation_pct, note, active
+             FROM goals"""
+    if not include_archived:
+        sql += " WHERE active = 1"
+    sql += " ORDER BY active DESC, name"
     out: list[GoalStatus] = []
-    for g in rows:
+    for g in conn.execute(sql).fetchall():
         net = _net_since(conn, g["start_date"], g["currency"])
         funded = round(net * g["allocation_pct"] / 100)
         pct = (funded / g["target_minor"] * 100) if g["target_minor"] > 0 else 0.0
@@ -418,8 +406,12 @@ def goals_status(conn: sqlite3.Connection, today: Optional[date] = None) -> list
             elapsed = min(max((today - start).days, 0), total_days)
             expected = g["target_minor"] * elapsed / total_days
             pace = "on_track" if funded >= expected else "behind"
-        out.append(GoalStatus(g["name"], g["target_minor"], funded, g["currency"],
-                              g["allocation_pct"], pct, pace))
+        out.append(GoalStatus(
+            id=g["id"], name=g["name"], target_minor=g["target_minor"], funded_minor=funded,
+            currency=g["currency"], allocation_pct=g["allocation_pct"], pct_complete=pct,
+            pace=pace, start_date=g["start_date"], target_date=g["target_date"],
+            note=g["note"], active=bool(g["active"]),
+        ))
     return out
 
 

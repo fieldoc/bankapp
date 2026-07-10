@@ -71,6 +71,7 @@ def sync_accounts(conn: sqlite3.Connection, cfg: Config) -> None:
 @app.command()
 def init() -> None:
     """Create the DB, apply schema, sync accounts, upsert seed rules + templates."""
+    from bankapp import goals as goalsmod
     from bankapp.classify import engine as classify
     from bankapp.match import splits
 
@@ -83,8 +84,10 @@ def init() -> None:
     ntmpl = splits.upsert_templates(conn, cfg.templates)
     nbud = advisor.upsert_budgets(conn, cfg.budgets)
     try:
-        ngoal = advisor.upsert_goals(conn, cfg.goals)
-    except advisor.AllocationError as exc:
+        # Seeds only names that don't exist yet. The DB owns a goal once it exists,
+        # so editing a [[goals]] block will not change it -- use the Goals page.
+        ngoal = goalsmod.seed_from_config(conn, cfg.goals)
+    except goalsmod.GoalError as exc:
         typer.echo(f"Goal config error: {exc}")
         raise typer.Exit(code=1)
     typer.echo(f"Initialized DB at {cfg.db_path}")
@@ -92,7 +95,7 @@ def init() -> None:
     typer.echo(f"Seed transfer rules: {seeded} added")
     typer.echo(f"Templates: {ntmpl} upserted")
     typer.echo(f"Budgets: {nbud} upserted")
-    typer.echo(f"Goals: {ngoal} upserted")
+    typer.echo(f"Goals: {ngoal} seeded")
 
 
 @accounts_app.command("list")
