@@ -119,9 +119,16 @@ class CashflowRow:
 
 def monthly_cashflow(conn: sqlite3.Connection, months: Optional[int] = None) -> list[CashflowRow]:
     """Income/spend/net per month over v_effective (transfers already netted, rent = my
-    share). savings_rate = net/income. Newest last; `months` keeps the last N."""
+    share). savings_rate = net/income. Newest last.
+
+    One row per (month, currency) — a month with foreign-currency activity yields more
+    than one row. `months` therefore keeps the last N distinct *months*, every currency
+    row within them; slicing the last N rows would silently evict a real month.
+    `months=None` returns everything; `months <= 0` returns nothing.
+    """
     rows = conn.execute(
-        "SELECT month, currency, income_minor, spend_minor, net_minor FROM v_monthly_cashflow ORDER BY month"
+        "SELECT month, currency, income_minor, spend_minor, net_minor FROM v_monthly_cashflow "
+        "ORDER BY month, currency"
     ).fetchall()
     out = []
     for r in rows:
@@ -130,7 +137,8 @@ def monthly_cashflow(conn: sqlite3.Connection, months: Optional[int] = None) -> 
         out.append(CashflowRow(r["month"], r["currency"], income, r["spend_minor"] or 0,
                                r["net_minor"] or 0, rate))
     if months is not None:
-        out = out[-months:]
+        keep = set(sorted({r.month for r in out})[-months:]) if months > 0 else set()
+        out = [r for r in out if r.month in keep]
     return out
 
 
@@ -169,8 +177,13 @@ def _month_elapsed_fraction(month: str, today: date) -> float:
     return 1.0 if date(y, m, 1) < today else 0.0
 
 
-def budget_status(conn: sqlite3.Connection, month: str, today: Optional[date] = None) -> list[BudgetRow]:
-    """Per-category actual vs limit for a month, with an ahead-of-pace warning."""
+def budget_status(conn: sqlite3.Connection, month: str, today: Optional[date] = None,
+                  currency: str = "CAD") -> list[BudgetRow]:
+    """Per-category actual vs limit for a month, with an ahead-of-pace warning.
+
+    Scoped to a single `currency`: limits are denominated in one currency, so spend in
+    another must not be summed into them (a 99.00 USD charge is not 99.00 CAD of budget).
+    """
     today = today or date.today()
     elapsed = _month_elapsed_fraction(month, today)
     actual_by_cat = {
@@ -178,13 +191,17 @@ def budget_status(conn: sqlite3.Connection, month: str, today: Optional[date] = 
         for r in conn.execute(
             """SELECT COALESCE(category,'(uncategorized)') AS cat,
                       SUM(CASE WHEN effective_minor < 0 THEN -effective_minor ELSE 0 END) AS spend
-               FROM v_effective WHERE substr(posted_date,1,7) = ? GROUP BY cat HAVING spend > 0""",
-            (month,),
+               FROM v_effective WHERE substr(posted_date,1,7) = ? AND currency = ?
+               GROUP BY cat HAVING spend > 0""",
+            (month, currency),
         )
     }
     budgets = {
         r["category"]: r["monthly_limit_minor"]
-        for r in conn.execute("SELECT category, monthly_limit_minor FROM budgets WHERE active = 1")
+        for r in conn.execute(
+            "SELECT category, monthly_limit_minor FROM budgets WHERE active = 1 AND currency = ?",
+            (currency,),
+        )
     }
     out: list[BudgetRow] = []
     for cat, limit in sorted(budgets.items()):
@@ -422,7 +439,7 @@ def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
     """Bundle the advisor state as a stable-keyed dict (the advisor skill's JSON input)."""
     today = today or date.today()
     month = today.strftime("%Y-%m")
-    cashflow = monthly_cashflow(conn)
+    cashflow = monthly_cashflow(conn, months=6)  # last 6 distinct months, all currencies
     history = net_worth_history(conn)
 
     # net worth delta vs the prior month-end (per currency), if available
@@ -446,7 +463,7 @@ def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
         "savings": [
             {"month": r.month, "currency": r.currency, "income_minor": r.income_minor,
              "spend_minor": r.spend_minor, "net_minor": r.net_minor, "savings_rate": round(r.savings_rate, 4)}
-            for r in cashflow[-6:]
+            for r in cashflow
         ],
         "budgets": [
             {"category": b.category, "limit_minor": b.limit_minor, "actual_minor": b.actual_minor,
@@ -505,11 +522,19 @@ def render_digest_markdown(d: dict) -> str:
         d_str = f"  (delta {m(delta, nw['currency'])})" if delta is not None else ""
         lines.append(f"- {m(nw['net_worth_minor'], nw['currency'])} as of {nw['freshest_as_of']}{d_str}")
 
-    if d["savings"]:
-        s = d["savings"][-1]
-        lines += ["", "## This month",
-                  f"- income {m(s['income_minor'])}, spend {m(s['spend_minor'])}, "
-                  f"net {m(s['net_minor'])}, savings rate {s['savings_rate'] * 100:.1f}%"]
+    # The savings list carries one row per (month, currency) — select this month's rows
+    # rather than the last one, and report each in its own currency.
+    this_month = [s for s in d["savings"] if s["month"] == d["month"]]
+    if this_month:
+        lines += ["", "## This month"]
+        for s in this_month:
+            cur = s["currency"]
+            lines.append(
+                f"- income {m(s['income_minor'], cur)}, spend {m(s['spend_minor'], cur)}, "
+                f"net {m(s['net_minor'], cur)}, savings rate {s['savings_rate'] * 100:.1f}%"
+            )
+    elif d["savings"]:
+        lines += ["", "## This month", "- no activity recorded yet this month"]
 
     over = [b for b in d["budgets"] if b["over"] or b["pace_warn"]]
     if over:
