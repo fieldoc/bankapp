@@ -88,6 +88,26 @@ Subscriptions & Leaks, Goals, Receivables, and Advice history. On a busy
 port it prints a friendly message; pass `--port` to pick another. The advisor skill persists its
 coaching via `finance advice add`, and the Overview surfaces the newest brief.
 
+### Launching it like a real Mac app
+
+```bash
+bash scripts/mac-app/build.sh      # builds + installs ~/Applications/BankApp.app
+```
+
+Then launch **BankApp** from Spotlight (⌘-Space), Finder, or the Dock. It behaves like a normal
+app: launching starts the dashboard (freeing port 8377 first, so a stale server from a previous
+run never blocks it), and quitting it (⌘-Q, or Dock → Quit) stops the server. Server output goes
+to `~/finance/logs/webapp.log`.
+
+The app runs the **stable `~/BankApp` install**, not the worktree that built it, so it keeps
+working after the build directory is gone. Re-run `build.sh` to pick up launcher changes; it
+regenerates the icon and replaces the installed copy. Build artifacts under
+`scripts/mac-app/build/` are gitignored.
+
+> A stay-open applet must never background a shell command as `cd X && cmd &` inside
+> `do shell script`: the subshell inherits the pipe, so `on run` blocks forever, the applet never
+> reaches its event loop, and ⌘-Q silently times out. See the comment in `BankApp.applescript`.
+
 ## Categorization workflow (Claude subscription, never the API)
 
 1. After a sync, unknowns collect in the review queue: `finance review count`.

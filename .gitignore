@@ -20,3 +20,8 @@ __pycache__/
 .venv/
 *.egg-info/
 .pytest_cache/
+
+# macOS app build artifacts
+scripts/mac-app/build/
+scripts/mac-app/icon_1024.png
+FULL-BUILD-PLAN.md
