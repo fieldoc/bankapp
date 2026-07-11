@@ -220,7 +220,8 @@ CREATE TABLE IF NOT EXISTS advisor_brief (
   created_at TEXT NOT NULL,           -- ISO-8601 UTC
   digest_as_of TEXT NOT NULL,         -- the digest 'as_of' date this brief was based on (YYYY-MM-DD)
   content_md TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'claude' CHECK (source IN ('claude','manual'))
+  source TEXT NOT NULL DEFAULT 'claude' CHECK (source IN ('claude','manual')),
+  digest_json TEXT                    -- pure digest() snapshot (no changes_since_brief) this brief was based on; NULL for older briefs
 );
 CREATE TRIGGER IF NOT EXISTS advisor_brief_no_update BEFORE UPDATE ON advisor_brief
 BEGIN SELECT RAISE(ABORT, 'advisor_brief is append-only'); END;

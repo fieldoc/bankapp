@@ -109,7 +109,7 @@ def test_digest_json_keys_stable(seeded):
         "as_of", "month", "net_worth", "net_worth_split", "net_worth_delta_minor",
         "net_worth_consolidated", "savings", "budgets", "subscriptions", "top_leaks",
         "receivables", "goals", "projection", "anomalies", "uncategorized_count",
-        "pending_transfer_legs", "data_quality",
+        "pending_transfer_legs", "data_quality", "changes_since_brief",
     }
     assert set(d.keys()) == expected_keys
     # round-trips as JSON

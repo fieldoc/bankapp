@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import calendar
 import dataclasses
+import json
 import sqlite3
 import statistics
 from dataclasses import dataclass
@@ -607,6 +608,74 @@ def _dq_notes(conn: sqlite3.Connection) -> dict:
     }
 
 
+def _changes_since_brief(conn: sqlite3.Connection, current: dict) -> dict:
+    """Diff the in-progress digest `current` (already fully built EXCEPT the
+    "changes_since_brief" key -- so this never recurses) against the most recent
+    persisted brief that carries a pure digest_json snapshot.
+
+    Returns {"has_prior": bool, "since": Optional[str], "changes": [{"kind", "detail"}]}.
+    With no such brief, has_prior is False and changes is empty -- never an error (A6).
+    """
+    from bankapp import money
+
+    row = conn.execute(
+        """SELECT digest_json, digest_as_of, created_at FROM advisor_brief
+           WHERE digest_json IS NOT NULL ORDER BY id DESC LIMIT 1"""
+    ).fetchone()
+    if row is None:
+        return {"has_prior": False, "since": None, "changes": []}
+
+    prior = json.loads(row["digest_json"])
+    changes: list[dict] = []
+
+    # new_subscription: merchant+currency present now but not in the prior snapshot.
+    prior_subs = {(s["merchant"], s["currency"]) for s in prior.get("subscriptions", [])}
+    for s in current.get("subscriptions", []):
+        if (s["merchant"], s["currency"]) not in prior_subs:
+            amt = money.from_minor(s["monthly_cost_minor"], s["currency"])
+            changes.append({
+                "kind": "new_subscription",
+                "detail": f"{s['merchant']} (${amt}/mo)",
+            })
+
+    # budget_over: category now over budget that was not over in the prior snapshot.
+    prior_over = {b["category"] for b in prior.get("budgets", []) if b.get("over")}
+    for b in current.get("budgets", []):
+        if b["over"] and b["category"] not in prior_over:
+            changes.append({
+                "kind": "budget_over",
+                "detail": f"{b['category']} now over budget",
+            })
+
+    # goal_off_pace: goal now behind that was not behind (by name) in the prior snapshot.
+    prior_behind = {g["name"] for g in prior.get("goals", []) if g.get("pace") == "behind"}
+    for g in current.get("goals", []):
+        if g["pace"] == "behind" and g["name"] not in prior_behind:
+            changes.append({
+                "kind": "goal_off_pace",
+                "detail": f"{g['name']} fell behind pace",
+            })
+
+    # net_worth: per-currency total delta since the snapshot, skipping currencies not
+    # held in both (nothing to compare -- not a "change").
+    prior_nw = {nw["currency"]: nw["net_worth_minor"] for nw in prior.get("net_worth", [])}
+    for nw in current.get("net_worth", []):
+        cur = nw["currency"]
+        if cur not in prior_nw:
+            continue
+        delta_minor = nw["net_worth_minor"] - prior_nw[cur]
+        if delta_minor == 0:
+            continue
+        delta = money.from_minor(delta_minor, cur)
+        sign = "+" if delta_minor > 0 else ""
+        changes.append({
+            "kind": "net_worth",
+            "detail": f"{cur} net worth {sign}${delta} since last brief",
+        })
+
+    return {"has_prior": True, "since": row["digest_as_of"], "changes": changes}
+
+
 def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
     """Bundle the advisor state as a stable-keyed dict (the advisor skill's JSON input)."""
     today = today or date.today()
@@ -625,7 +694,7 @@ def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
         if len(series) >= 2:
             nw_delta[cur] = series[-1]["net_worth_minor"] - series[-2]["net_worth_minor"]
 
-    return {
+    d = {
         "as_of": today.isoformat(),
         "month": month,
         "net_worth": [
@@ -678,6 +747,8 @@ def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
         ],
         "data_quality": _dq_notes(conn),
     }
+    d["changes_since_brief"] = _changes_since_brief(conn, d)
+    return d
 
 
 def _uncategorized_count(conn: sqlite3.Connection) -> int:

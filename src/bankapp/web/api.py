@@ -51,6 +51,11 @@ def get_digest(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -
     return advisor.digest(conn, request.app.state.cfg)
 
 
+@router.get("/api/changes")
+def get_changes(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    return advisor.digest(conn, request.app.state.cfg)["changes_since_brief"]
+
+
 @router.get("/api/networth")
 def get_networth(conn: sqlite3.Connection = Depends(get_conn)) -> list:
     return [dataclasses.asdict(r) for r in advisor.net_worth(conn)]

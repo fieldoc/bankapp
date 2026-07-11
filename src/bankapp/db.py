@@ -39,6 +39,9 @@ _COLUMN_MIGRATIONS = [
     # Manual one-off category overrides set from the UI. DEFAULT 'rule' backfills all
     # existing (rule-derived) interp rows; only UI one-offs carry 'manual'.
     ("txn_interp", "source", "TEXT NOT NULL DEFAULT 'rule'"),
+    # Pure digest() snapshot a brief was based on (see report/advisor.py
+    # _changes_since_brief). NULL for briefs written before this column existed.
+    ("advisor_brief", "digest_json", "TEXT"),
 ]
 
 # Views are pure derivations over immutable data, so the cheapest way to keep their

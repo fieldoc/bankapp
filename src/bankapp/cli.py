@@ -897,15 +897,20 @@ def advice_add(
     source: str = typer.Option("claude", "--source", help="claude | manual"),
 ) -> None:
     """Persist an advisor brief (Claude coaching output). Reads --file or stdin."""
-    from bankapp.report import briefs
+    import json
+
+    from bankapp.report import advisor, briefs
 
     if as_of is None:
         as_of = date.today().isoformat()
     content_md = Path(file).read_text(encoding="utf-8") if file is not None else sys.stdin.read()
 
-    _, conn = _load()
+    cfg, conn = _load()
+    d = advisor.digest(conn, cfg)
+    d.pop("changes_since_brief", None)  # store the PURE snapshot -- no recursion
+    digest_json = json.dumps(d)
     try:
-        brief_id = briefs.add_brief(conn, content_md, as_of, source=source)
+        brief_id = briefs.add_brief(conn, content_md, as_of, source=source, digest_json=digest_json)
     except ValueError as exc:
         typer.echo(f"Error: {exc}")
         raise typer.Exit(1)
