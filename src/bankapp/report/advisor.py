@@ -147,6 +147,90 @@ def consolidated_net_worth(conn: sqlite3.Connection, target: str = "CAD") -> dic
     }
 
 
+# ---- S4 balance reconciliation -----------------------------------------------
+
+@dataclass(frozen=True)
+class ReconcileRow:
+    account_key: str
+    currency: str
+    status: str                          # 'ok' | 'drift' | 'unverified'
+    anchor_as_of: Optional[str]
+    target_as_of: Optional[str]
+    expected_delta_minor: Optional[int]  # target_balance - anchor_balance
+    ledger_delta_minor: Optional[int]    # SUM(raw_txn.amount_minor) in the interval
+    drift_minor: Optional[int]           # expected_delta - ledger_delta (0 when ok)
+
+
+def reconcile(conn: sqlite3.Connection, tolerance_minor: int = 0) -> list[ReconcileRow]:
+    """Verify each account's snapshot history agrees with the immutable ledger.
+
+    For each account with balance_snapshot rows, first collapses to ONE balance per
+    distinct as_of (multiple sources can share a day) by taking the row with the
+    latest captured_at for that account+as_of. The earliest remaining as_of is the
+    `anchor`, the latest is the `target`.
+
+    A snapshot's balance is read as "everything posted up to and including its
+    as_of date". So the ledger window for the anchor->target interval is
+    posted_date > anchor.as_of AND posted_date <= target.as_of: a txn dated exactly
+    on the anchor day is already baked into the anchor balance (excluded), while one
+    dated exactly on the target day is not yet reflected until this snapshot
+    (included).
+
+    Bounded cost: one query to pick account+as_of balances, plus one grouped ledger-sum
+    query across all reconcilable accounts -- O(accounts), never per-transaction.
+    """
+    # All snapshots, ordered so that within each (account, as_of) group the row we want
+    # (latest captured_at; ties broken by highest id, i.e. most-recently-inserted) comes
+    # first. Collapsing to one-per-as_of happens in Python below, which sidesteps the
+    # ambiguity a SQL self-join on MAX(captured_at) would have if two sources tie exactly.
+    snap_rows = conn.execute(
+        """SELECT b.account_id, b.as_of, b.balance_minor, a.key AS account_key, a.currency
+           FROM balance_snapshot b
+           JOIN accounts a ON a.id = b.account_id
+           ORDER BY b.account_id, b.as_of, b.captured_at DESC, b.id DESC"""
+    ).fetchall()
+
+    by_account: dict[int, list[sqlite3.Row]] = {}
+    seen_as_of: dict[int, set] = {}
+    for r in snap_rows:
+        acct_seen = seen_as_of.setdefault(r["account_id"], set())
+        if r["as_of"] in acct_seen:
+            continue  # a later (lower-priority) row for an as_of we already picked
+        acct_seen.add(r["as_of"])
+        by_account.setdefault(r["account_id"], []).append(r)
+    for acct_id, rows_ in by_account.items():
+        rows_.sort(key=lambda r: r["as_of"])
+
+    rows: list[ReconcileRow] = []
+    for account_id, snaps in by_account.items():
+        account_key = snaps[0]["account_key"]
+        currency = snaps[0]["currency"]
+        if len(snaps) < 2:
+            single = snaps[0]
+            rows.append(ReconcileRow(
+                account_key=account_key, currency=currency, status="unverified",
+                anchor_as_of=single["as_of"], target_as_of=single["as_of"],
+                expected_delta_minor=None, ledger_delta_minor=None, drift_minor=None,
+            ))
+            continue
+        anchor, target = snaps[0], snaps[-1]
+        expected_delta = target["balance_minor"] - anchor["balance_minor"]
+        ledger_delta = conn.execute(
+            """SELECT COALESCE(SUM(amount_minor), 0) FROM raw_txn
+               WHERE account_id = ? AND posted_date > ? AND posted_date <= ?""",
+            (account_id, anchor["as_of"], target["as_of"]),
+        ).fetchone()[0]
+        drift = expected_delta - ledger_delta
+        status = "ok" if abs(drift) <= tolerance_minor else "drift"
+        rows.append(ReconcileRow(
+            account_key=account_key, currency=currency, status=status,
+            anchor_as_of=anchor["as_of"], target_as_of=target["as_of"],
+            expected_delta_minor=expected_delta, ledger_delta_minor=ledger_delta,
+            drift_minor=drift,
+        ))
+    return sorted(rows, key=lambda r: r.account_key)
+
+
 # ---- T9.1 cashflow / savings ------------------------------------------------
 
 @dataclass(frozen=True)

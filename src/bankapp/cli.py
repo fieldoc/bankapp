@@ -719,6 +719,36 @@ def report_leaks(threshold: str = typer.Option("15.00", "--threshold", help="Dol
         )
 
 
+@report_app.command("reconcile")
+def report_reconcile() -> None:
+    """Per account: does the bank-provided balance match the summed ledger between
+    snapshots? Flags drift with the amount."""
+    from bankapp import money
+    from bankapp.report import advisor
+
+    _, conn = _load()
+    rows = advisor.reconcile(conn)
+    if not rows:
+        typer.echo("No balance snapshots yet.")
+        return
+    any_drift = False
+    for r in rows:
+        if r.status == "unverified":
+            typer.echo(f"  {r.account_key:20} only one snapshot ({r.anchor_as_of}) — cannot reconcile")
+            continue
+        flag = "  [DRIFT]" if r.status == "drift" else ""
+        if r.status == "drift":
+            any_drift = True
+        typer.echo(
+            f"  {r.account_key:20} {r.anchor_as_of} -> {r.target_as_of}  "
+            f"expected {money.from_minor(r.expected_delta_minor, r.currency):>10} {r.currency}  "
+            f"ledger {money.from_minor(r.ledger_delta_minor, r.currency):>10} {r.currency}  "
+            f"drift {money.from_minor(r.drift_minor, r.currency):>10} {r.currency}{flag}"
+        )
+    if not any_drift:
+        typer.echo("All accounts reconciled.")
+
+
 @report_app.command("anomalies")
 def report_anomalies() -> None:
     """Money-affecting oddities: unusual charges, stopped subscriptions, duplicates."""
@@ -771,7 +801,7 @@ def digest(format: str = typer.Option("markdown", "--format", help="markdown | j
 def status() -> None:
     """Dashboard: uncategorized, pending transfers (aged), receivables, last sync/import."""
     from bankapp import money
-    from bankapp.report import analytics
+    from bankapp.report import advisor, analytics
 
     cfg, conn = _load()
     st = analytics.status(conn, cfg.transfers.window_days)
@@ -799,6 +829,12 @@ def status() -> None:
     typer.echo(f"Last Plaid sync: {plaid_sync or '(never)'}")
     if plaid_err:
         typer.echo(f"Last Plaid error: {plaid_err}")
+
+    drift_count = sum(1 for r in advisor.reconcile(conn) if r.status == "drift")
+    if drift_count:
+        typer.echo(f"Reconciliation: {drift_count} account(s) with drift — run 'finance report reconcile'")
+    else:
+        typer.echo("Reconciliation: all accounts reconciled")
 
 
 @app.command()

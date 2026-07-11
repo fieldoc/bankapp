@@ -61,6 +61,11 @@ def get_networth_history(conn: sqlite3.Connection = Depends(get_conn)) -> list:
     return advisor.net_worth_history(conn)
 
 
+@router.get("/api/reconciliation")
+def get_reconciliation(conn: sqlite3.Connection = Depends(get_conn)) -> list:
+    return [dataclasses.asdict(r) for r in advisor.reconcile(conn)]
+
+
 @router.get("/api/cashflow")
 def get_cashflow(months: Optional[int] = None, conn: sqlite3.Connection = Depends(get_conn)) -> list:
     return [dataclasses.asdict(r) for r in advisor.monthly_cashflow(conn, months)]
