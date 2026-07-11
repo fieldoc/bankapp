@@ -719,6 +719,20 @@ def report_leaks(threshold: str = typer.Option("15.00", "--threshold", help="Dol
         )
 
 
+@report_app.command("anomalies")
+def report_anomalies() -> None:
+    """Money-affecting oddities: unusual charges, stopped subscriptions, duplicates."""
+    from bankapp.report import anomalies
+
+    _, conn = _load()
+    rows = anomalies.anomalies_from_db(conn)
+    if not rows:
+        typer.echo("No anomalies.")
+        return
+    for a in rows:
+        typer.echo(f"  [{a.kind}] {a.merchant} - {a.detail}")
+
+
 @goals_app.command("status")
 def goals_status_cmd() -> None:
     """Per-goal funded (net savings since start x allocation), % complete, pace."""

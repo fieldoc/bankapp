@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from bankapp import goals as goalsmod
 from bankapp import money
 from bankapp.classify import engine as classify
-from bankapp.report import advisor, analytics, briefs, projection
+from bankapp.report import advisor, analytics, anomalies, briefs, projection
 from bankapp.web.deps import get_conn
 from bankapp.web.queries import filter_options, receivables_all, transactions_page
 
@@ -116,6 +116,11 @@ def get_leaks(
 @router.get("/api/projection")
 def get_projection(conn: sqlite3.Connection = Depends(get_conn)) -> list:
     return [dataclasses.asdict(r) for r in projection.month_projection(conn)]
+
+
+@router.get("/api/anomalies")
+def get_anomalies(conn: sqlite3.Connection = Depends(get_conn)) -> list:
+    return [dataclasses.asdict(a) for a in anomalies.anomalies_from_db(conn)]
 
 
 @router.get("/api/goals")
