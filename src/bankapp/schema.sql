@@ -195,13 +195,30 @@ SELECT substr(posted_date, 1, 7) AS month, currency,
 FROM v_effective
 GROUP BY month, currency;
 
+-- Manual settlement of a receivable (e.g. a roommate pays their share back in cash,
+-- with no bank transaction to match). Keyed on (template_id, period_key) -- NOT on
+-- groups.id -- because match_splits() DELETEs and rebuilds every split-expense
+-- group on every run (new group ids each time); template_id/period_key are the only
+-- stable handles across a rebuild.
+CREATE TABLE IF NOT EXISTS receivable_settlement (
+  id INTEGER PRIMARY KEY,
+  template_id INTEGER NOT NULL REFERENCES recurring_templates(id),
+  period_key TEXT NOT NULL,        -- 'YYYY-MM'
+  amount_minor INTEGER NOT NULL,   -- manual cash reimbursement recorded (positive)
+  note TEXT,
+  settled_at TEXT NOT NULL,        -- ISO-8601 UTC
+  UNIQUE (template_id, period_key)
+);
+
 -- Receivables (AR-lite) with aging: expected = roommate's share = |expense| - my share.
 CREATE VIEW IF NOT EXISTS v_receivables AS
 SELECT g.id AS group_id, t.name AS template, g.period_key, g.status,
   exp.expense_minor,
   (ABS(exp.expense_minor) - exp.share_minor) AS expected_minor,
   COALESCE(reimb.received_minor, 0) AS received_minor,
-  (ABS(exp.expense_minor) - exp.share_minor) - COALESCE(reimb.received_minor, 0) AS outstanding_minor,
+  COALESCE(s.amount_minor, 0) AS settled_minor,
+  (ABS(exp.expense_minor) - exp.share_minor)
+    - COALESCE(reimb.received_minor, 0) - COALESCE(s.amount_minor, 0) AS outstanding_minor,
   CAST(julianday('now') - julianday(exp.expense_date) AS INTEGER) AS age_days
 FROM groups g
 JOIN recurring_templates t ON t.id = g.template_id
@@ -212,6 +229,7 @@ LEFT JOIN (SELECT gm.group_id, r.amount_minor AS expense_minor,
 LEFT JOIN (SELECT gm.group_id, SUM(ABS(r.amount_minor)) AS received_minor
            FROM group_members gm JOIN raw_txn r ON r.id = gm.raw_txn_id
            WHERE gm.role = 'reimbursement' GROUP BY gm.group_id) reimb ON reimb.group_id = g.id
+LEFT JOIN receivable_settlement s ON s.template_id = g.template_id AND s.period_key = g.period_key
 WHERE g.type = 'split_expense';
 
 -- Persisted advisor briefs (Claude coaching output). Append-only, like raw_txn.

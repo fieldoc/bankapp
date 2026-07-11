@@ -43,6 +43,8 @@ advice_app = typer.Typer(help="Persisted advisor briefs (Claude coaching output)
 app.add_typer(advice_app, name="advice")
 fx_app = typer.Typer(help="Manually-entered FX rates.")
 app.add_typer(fx_app, name="fx")
+receivables_app = typer.Typer(help="Split-expense receivables (AR-lite).")
+app.add_typer(receivables_app, name="receivables")
 
 _OFX_EXTS = {".ofx", ".qfx"}
 _CSV_EXTS = {".csv"}
@@ -451,6 +453,62 @@ def rules_set_counterparty(
     n = classify.categorize(conn, recompute_all=True)
     typer.echo(f"Counterparty {'cleared' if not counterparty else 'set to ' + counterparty!r}; "
                f"{n} transaction(s) re-stamped.")
+
+
+@receivables_app.command("list")
+def receivables_list() -> None:
+    """List all split-expense receivables (template, period, expected/received/settled/outstanding, age)."""
+    from bankapp import money
+
+    _, conn = _load()
+    rows = conn.execute(
+        """SELECT template, period_key, status, expected_minor, received_minor,
+                  settled_minor, outstanding_minor, age_days
+           FROM v_receivables ORDER BY period_key DESC"""
+    ).fetchall()
+    if not rows:
+        typer.echo("No receivables.")
+        return
+    for r in rows:
+        typer.echo(
+            f"{r['template']} {r['period_key']} [{r['status']}] "
+            f"expected={money.from_minor(r['expected_minor'], 'CAD')} "
+            f"received={money.from_minor(r['received_minor'], 'CAD')} "
+            f"settled={money.from_minor(r['settled_minor'], 'CAD')} "
+            f"outstanding={money.from_minor(r['outstanding_minor'], 'CAD')} "
+            f"age={r['age_days']}d"
+        )
+
+
+@receivables_app.command("settle")
+def receivables_settle(
+    template: str = typer.Option(..., "--template", help="Template name, as in `rules list` / config."),
+    period: str = typer.Option(..., "--period", help="Period key, 'YYYY-MM'."),
+    amount: Optional[str] = typer.Option(
+        None, "--amount", help="Major units to record as settled. Default: full outstanding non-bank amount."
+    ),
+    note: Optional[str] = typer.Option(None, "--note"),
+) -> None:
+    """Mark a receivable settled (e.g. a roommate paid their share back in cash).
+    Survives `finance match all --rebuild` -- it is keyed on template+period, not
+    on the (rebuildable) group id."""
+    from bankapp import money
+    from bankapp import receivables as receivablesmod
+
+    _, conn = _load()
+    amount_minor = money.to_minor(amount, "CAD") if amount is not None else None
+    try:
+        result = receivablesmod.settle_by_template(
+            conn, template, period, amount_minor=amount_minor, note=note
+        )
+    except receivablesmod.ReceivableNotFound as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"Settled {money.from_minor(result['settled_minor'], 'CAD')} for "
+        f"{result['template']} {result['period_key']}; "
+        f"outstanding now {money.from_minor(result['outstanding_minor'], 'CAD')}."
+    )
 
 
 @fx_app.command("set")

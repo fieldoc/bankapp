@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from bankapp import goals as goalsmod
 from bankapp import money
+from bankapp import receivables as receivablesmod
 from bankapp.classify import engine as classify
 from bankapp.report import advisor, analytics, anomalies, briefs, projection
 from bankapp.web.deps import get_conn
@@ -171,6 +172,26 @@ def get_transactions(
 @router.get("/api/receivables")
 def get_receivables(conn: sqlite3.Connection = Depends(get_conn)) -> list:
     return receivables_all(conn)
+
+
+class SettleIn(BaseModel):
+    group_id: int
+    amount: Optional[str] = None  # major units, e.g. "60.00"; parsed by money.to_minor
+    note: Optional[str] = None
+
+
+@router.post("/api/receivables/settle")
+def post_receivables_settle(body: SettleIn, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    """Record a manual (non-bank) settlement for a receivable, e.g. a roommate paying
+    their share back in cash. Keyed on template+period under the hood, so it survives
+    the next `match all --rebuild` even though group ids are not stable across it."""
+    amount_minor = money.to_minor(body.amount, "CAD") if body.amount is not None else None
+    try:
+        return receivablesmod.settle_group(
+            conn, body.group_id, amount_minor=amount_minor, note=body.note
+        )
+    except receivablesmod.ReceivableNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 # ---- write routes (categorization) -----------------------------------------
