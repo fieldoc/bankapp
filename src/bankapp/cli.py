@@ -640,6 +640,26 @@ def report_savings(months: Optional[int] = typer.Option(None, "--months", help="
         prev[r.currency] = r.net_minor
 
 
+@report_app.command("projection")
+def report_projection() -> None:
+    """Per-currency safe-to-spend for the current month: expected income minus
+    spent-so-far minus committed-remaining, floored at 0."""
+    from bankapp import money
+    from bankapp.report import projection
+
+    _, conn = _load()
+    rows = projection.month_projection(conn)
+    if not rows:
+        typer.echo("No data yet.")
+        return
+    for r in rows:
+        typer.echo(f"{r.month} {r.currency}")
+        typer.echo(f"  expected income      {money.from_minor(r.expected_income_minor, r.currency):>12} {r.currency}")
+        typer.echo(f"  spent so far         {money.from_minor(r.spent_so_far_minor, r.currency):>12} {r.currency}")
+        typer.echo(f"  committed remaining  {money.from_minor(r.committed_remaining_minor, r.currency):>12} {r.currency}")
+        typer.echo(f"  safe to spend        {money.from_minor(r.safe_to_spend_minor, r.currency):>12} {r.currency}")
+
+
 @budget_app.command("status")
 def budget_status_cmd(month: str = typer.Option(..., "--month", help="YYYY-MM")) -> None:
     """Per-category actual vs limit for a month, with over/pace warnings."""

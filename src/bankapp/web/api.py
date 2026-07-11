@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from bankapp import goals as goalsmod
 from bankapp import money
 from bankapp.classify import engine as classify
-from bankapp.report import advisor, analytics, briefs
+from bankapp.report import advisor, analytics, briefs, projection
 from bankapp.web.deps import get_conn
 from bankapp.web.queries import filter_options, receivables_all, transactions_page
 
@@ -111,6 +111,11 @@ def get_leaks(
 ) -> list:
     threshold = threshold_minor if threshold_minor is not None else request.app.state.cfg.leak_threshold_minor
     return [dataclasses.asdict(r) for r in advisor.leaks_from_db(conn, threshold)]
+
+
+@router.get("/api/projection")
+def get_projection(conn: sqlite3.Connection = Depends(get_conn)) -> list:
+    return [dataclasses.asdict(r) for r in projection.month_projection(conn)]
 
 
 @router.get("/api/goals")

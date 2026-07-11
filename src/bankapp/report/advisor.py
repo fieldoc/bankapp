@@ -9,6 +9,7 @@ engine for the frugally-luxurious mission: surface money slipping away unnoticed
 from __future__ import annotations
 
 import calendar
+import dataclasses
 import sqlite3
 import statistics
 from dataclasses import dataclass
@@ -526,6 +527,8 @@ def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
     """Bundle the advisor state as a stable-keyed dict (the advisor skill's JSON input)."""
     today = today or date.today()
     month = today.strftime("%Y-%m")
+    from bankapp.report import projection
+
     cashflow = monthly_cashflow(conn, months=6)  # last 6 distinct months, all currencies
     history = net_worth_history(conn)
 
@@ -582,6 +585,7 @@ def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
              "pct_complete": round(g.pct_complete, 2), "pace": g.pace}
             for g in goals_status(conn, today)
         ],
+        "projection": [dataclasses.asdict(r) for r in projection.month_projection(conn, today)],
         "uncategorized_count": _uncategorized_count(conn),
         "pending_transfer_legs": [
             {"id": r["id"], "amount_minor": r["amount_minor"], "age_days": r["age_days"]}
