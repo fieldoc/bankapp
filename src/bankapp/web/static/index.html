@@ -11,9 +11,24 @@
   <h1 class="page-title">Overview</h1>
   <p class="page-sub" id="asof">&nbsp;</p>
 
+  <section class="block" id="changes-block" style="display:none">
+    <h2 id="changes-heading">What's changed since your last brief</h2>
+    <div class="panel scroll-x" id="changes-list"></div>
+  </section>
+
   <section class="block">
     <h2>Net worth</h2>
     <div class="grid cols-3" id="nw-cards"></div>
+  </section>
+
+  <section class="block">
+    <h2>Safe to spend</h2>
+    <div class="grid cols-3" id="sts-cards"></div>
+  </section>
+
+  <section class="block" id="nwc-block" style="display:none">
+    <h2>Consolidated net worth</h2>
+    <div class="grid cols-3" id="nwc-cards"></div>
   </section>
 
   <section class="block">
@@ -40,9 +55,19 @@
     <div class="panel" id="budgets"></div>
   </section>
 
+  <section class="block" id="anomalies-block" style="display:none">
+    <h2>Heads up</h2>
+    <div class="panel scroll-x" id="anomalies-list"></div>
+  </section>
+
   <section class="block">
     <h2>Advisor brief</h2>
     <div class="panel" id="brief"></div>
+  </section>
+
+  <section class="block" id="recon-block" style="display:none">
+    <h2>Reconciliation</h2>
+    <div class="panel" id="recon-panel"></div>
   </section>
 
   <div class="dq" id="dq"></div>
@@ -148,6 +173,29 @@
     const digest = await App.api("/api/digest");
     App.el("asof").textContent = `as of ${digest.as_of}`;
 
+    // ---- what's changed since your last brief ----
+    (function renderChanges() {
+      try {
+        const csb = digest.changes_since_brief;
+        const block = App.el("changes-block");
+        if (!csb || !csb.has_prior || !csb.changes || !csb.changes.length) {
+          block.style.display = "none";
+          return;
+        }
+        App.el("changes-heading").textContent = `What's changed since your last brief (since ${App.shortDate(csb.since)})`;
+        let rows = "";
+        for (const c of csb.changes) {
+          rows +=
+            `<tr><td><span class="badge role">${App.esc(c.kind)}</span></td>` +
+            `<td class="desc">${App.esc(c.detail)}</td></tr>`;
+        }
+        App.el("changes-list").innerHTML = `<table class="tbl"><tbody>${rows}</tbody></table>`;
+        block.style.display = "";
+      } catch (e) {
+        App.el("changes-block").style.display = "none";
+      }
+    })();
+
     // ---- net-worth cards ----
     const cards = App.el("nw-cards");
     if (!digest.net_worth || !digest.net_worth.length) {
@@ -171,6 +219,62 @@
         cards.appendChild(card);
       }
     }
+
+    // ---- safe to spend (from digest.projection) ----
+    (function renderSafeToSpend() {
+      try {
+        const stsWrap = App.el("sts-cards");
+        const projection = digest.projection || [];
+        if (!projection.length) {
+          App.empty(stsWrap, "No projection yet — run <code>finance refresh</code>.");
+          return;
+        }
+        stsWrap.innerHTML = "";
+        for (const p of projection) {
+          const card = document.createElement("div");
+          card.className = "panel card";
+          card.innerHTML =
+            `<div class="label">${App.esc(p.currency)} · ${App.esc(p.month)}</div>` +
+            `<div class="value">${App.fmtMoney(p.safe_to_spend_minor, p.currency)}</div>` +
+            `<div class="sub">${App.fmtMoney(p.expected_income_minor, p.currency)} &minus; ` +
+            `${App.fmtMoney(p.spent_so_far_minor, p.currency)} &minus; ` +
+            `${App.fmtMoney(p.committed_remaining_minor, p.currency)}</div>`;
+          stsWrap.appendChild(card);
+        }
+      } catch (e) {
+        App.empty(App.el("sts-cards"), "Could not render safe-to-spend.");
+      }
+    })();
+
+    // ---- consolidated net worth (from digest.net_worth_consolidated) ----
+    (function renderConsolidatedNetWorth() {
+      try {
+        const nwc = digest.net_worth_consolidated;
+        const block = App.el("nwc-block");
+        const components = (nwc && nwc.components) || [];
+        const unconverted = (nwc && nwc.unconverted) || [];
+        if (!nwc || (components.length < 2 && !unconverted.length)) {
+          block.style.display = "none";
+          return;
+        }
+        const wrap = App.el("nwc-cards");
+        wrap.innerHTML = "";
+        const card = document.createElement("div");
+        card.className = "panel card";
+        let sub = "";
+        if (unconverted.length) {
+          sub = `<div class="sub">not converted (no rate): ${unconverted.map(App.esc).join(", ")}</div>`;
+        }
+        card.innerHTML =
+          `<div class="label">Consolidated (${App.esc(nwc.target)})</div>` +
+          `<div class="value">${App.fmtMoney(nwc.total_minor, nwc.target)}</div>` +
+          sub;
+        wrap.appendChild(card);
+        block.style.display = "";
+      } catch (e) {
+        App.el("nwc-block").style.display = "none";
+      }
+    })();
 
     // ---- net-worth history line chart ----
     const hist = await App.api("/api/networth/history");
@@ -263,6 +367,28 @@
       }
     }
 
+    // ---- heads up (anomalies) ----
+    (function renderAnomalies() {
+      try {
+        const block = App.el("anomalies-block");
+        const anomalies = digest.anomalies || [];
+        if (!anomalies.length) {
+          block.style.display = "none";
+          return;
+        }
+        let rows = "";
+        for (const a of anomalies) {
+          rows +=
+            `<tr><td><span class="badge pace">${App.esc(a.kind)}</span></td>` +
+            `<td class="desc">${App.esc(a.merchant)} &mdash; ${App.esc(a.detail)}</td></tr>`;
+        }
+        App.el("anomalies-list").innerHTML = `<table class="tbl"><tbody>${rows}</tbody></table>`;
+        block.style.display = "";
+      } catch (e) {
+        App.el("anomalies-block").style.display = "none";
+      }
+    })();
+
     // ---- advisor brief ----
     const briefEl = App.el("brief");
     const brief = await App.api("/api/advice/latest");
@@ -274,6 +400,41 @@
         `<div class="brief">${App.renderMarkdown(brief.content_md)}</div>` +
         `<div class="stamp" style="margin-top:14px"><a href="/advice.html">All briefs &rarr;</a></div>`;
     }
+
+    // ---- reconciliation (one new fetch: /api/reconciliation) ----
+    await (async function renderReconciliation() {
+      try {
+        const block = App.el("recon-block");
+        const recon = await App.api("/api/reconciliation");
+        if (!recon || !recon.length) {
+          block.style.display = "none";
+          return;
+        }
+        const drifted = recon.filter((r) => r.status === "drift");
+        const unverified = recon.filter((r) => r.status === "unverified");
+        const panel = App.el("recon-panel");
+        let html = "";
+        if (drifted.length) {
+          let rows = "";
+          for (const r of drifted) {
+            rows +=
+              `<tr><td class="desc">${App.esc(r.account_key)}</td>` +
+              `<td><span class="badge over">drift</span></td>` +
+              `<td class="num">${App.fmtMoney(r.drift_minor, r.currency)}</td></tr>`;
+          }
+          html += `<table class="tbl"><tbody>${rows}</tbody></table>`;
+        } else {
+          html += `<div class="pos">&#10003; All accounts reconciled</div>`;
+        }
+        if (unverified.length) {
+          html += `<div class="sub" style="margin-top:8px">${unverified.length} account(s) not yet verifiable</div>`;
+        }
+        panel.innerHTML = html;
+        block.style.display = "";
+      } catch (e) {
+        App.el("recon-block").style.display = "none";
+      }
+    })();
 
     // ---- data-quality footer ----
     const dq = digest.data_quality || {};
