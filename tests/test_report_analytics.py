@@ -163,6 +163,13 @@ def test_month_flows_overspent_month(conn):
     assert mf.savings_minor == -50000
     assert "sav:Savings" not in mf.labels
     assert not any(l.target == "sav:Savings" for l in mf.links)
+    # the shortfall is an explicit "From savings" source INTO Income (not a gap)
+    assert "src:From savings" in mf.labels
+    drawdown = [l for l in mf.links if l.source == "src:From savings"]
+    assert len(drawdown) == 1
+    assert drawdown[0].target == "inc:Income" and drawdown[0].flow_minor == 50000
+    # every dollar the Income node emits now has a source: sources == spend
+    assert sum(l.flow_minor for l in mf.links if l.source.startswith("src:")) == mf.spend_total_minor
     row = conn.execute(
         "SELECT income_minor, spend_minor FROM v_monthly_cashflow WHERE month='2026-04' AND currency='CAD'"
     ).fetchone()
