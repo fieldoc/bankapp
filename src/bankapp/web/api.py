@@ -214,6 +214,13 @@ class OneOffIn(BaseModel):
     counterparty: Optional[str] = None
 
 
+class BulkCategorizeIn(BaseModel):
+    ids: list[int]
+    category: str
+    role: Optional[str] = None
+    counterparty: Optional[str] = None
+
+
 class GoalIn(BaseModel):
     name: str
     target: str  # major units, e.g. "3000.00"; parsed by money.to_minor
@@ -256,6 +263,36 @@ def post_one_off(
         conn, raw_txn_id, body.category, role_hint=body.role, counterparty=body.counterparty
     )
     return {"ok": True}
+
+
+@router.post("/api/transactions/bulk-categorize")
+def post_bulk_categorize(
+    body: BulkCategorizeIn, conn: sqlite3.Connection = Depends(get_conn)
+) -> dict:
+    """Set the same one-off manual category on multiple transactions in a single
+    request (no rule created). One POST carrying the id list, not one per row."""
+    if not body.ids:
+        raise HTTPException(status_code=400, detail="ids must not be empty")
+    category = body.category.strip()
+    if not category:
+        raise HTTPException(status_code=400, detail="category must not be empty")
+
+    placeholders = ",".join("?" for _ in body.ids)
+    rows = conn.execute(
+        f"SELECT id FROM raw_txn WHERE id IN ({placeholders})", tuple(body.ids)
+    ).fetchall()
+    found = {r[0] for r in rows}
+    missing = [i for i in body.ids if i not in found]
+    if missing:
+        raise HTTPException(
+            status_code=400, detail=f"no transaction(s) with id {missing}"
+        )
+
+    for raw_txn_id in body.ids:
+        classify.set_manual_category(
+            conn, raw_txn_id, category, role_hint=body.role, counterparty=body.counterparty
+        )
+    return {"categorized": len(body.ids)}
 
 
 # ---- goals ------------------------------------------------------------------
