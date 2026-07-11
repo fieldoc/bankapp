@@ -10,6 +10,7 @@ committed_remaining = this month's unpaid split-expense my-shares
 
 from __future__ import annotations
 
+import calendar
 import sqlite3
 import statistics
 from dataclasses import dataclass
@@ -18,12 +19,44 @@ from typing import Optional
 
 from bankapp import money
 
-# Cadence -> interval used to predict the next charge date from last_charge.
-_SUB_INTERVALS = {
-    "monthly": timedelta(days=30),
-    "weekly": timedelta(days=7),
-    "annual": timedelta(days=365),
-}
+_SUB_CADENCES = ("monthly", "weekly", "annual")
+
+
+def _add_months(d: date, n: int) -> date:
+    """d shifted by n calendar months, clamping the day into the target month
+    (Jan 31 + 1 month -> Feb 28/29). A fixed 30-day step would push an end-of-month
+    biller past the month boundary and drop its charge from the projection."""
+    m0 = d.month - 1 + n
+    year = d.year + m0 // 12
+    month = m0 % 12 + 1
+    last_day = calendar.monthrange(year, month)[1]
+    return date(year, month, min(d.day, last_day))
+
+
+def _predicted_charges_in_window(last_charge: str, cadence: str, today: date, month_end: date) -> int:
+    """How many charges a subscription is predicted to make in (today, month_end].
+
+    Steps forward from last_charge by the cadence -- calendar months for
+    monthly/annual (so end-of-month billers land correctly), 7 days for weekly --
+    counting every predicted date that falls after today and on/before month_end.
+    Weekly subs can legitimately have more than one charge left in a month.
+    """
+    last = date.fromisoformat(last_charge)
+    count = 0
+    for i in range(1, 61):  # bounded; 60 steps covers any month for every cadence
+        if cadence == "monthly":
+            d = _add_months(last, i)
+        elif cadence == "weekly":
+            d = last + timedelta(days=7 * i)
+        elif cadence == "annual":
+            d = _add_months(last, 12 * i)
+        else:
+            break
+        if d > month_end:
+            break
+        if d > today:
+            count += 1
+    return count
 
 
 @dataclass(frozen=True)
@@ -93,6 +126,8 @@ def month_projection(conn: sqlite3.Connection, today: Optional[date] = None) -> 
 
         spent_so_far_minor = this_month_row.spend_minor if this_month_row else 0
 
+        month_end = date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
+
         committed = 0
         for t in templates:
             if t.currency != cur:
@@ -105,14 +140,10 @@ def month_projection(conn: sqlite3.Connection, today: Optional[date] = None) -> 
             committed += my_share
 
         for s in subs:
-            if s.currency != cur:
+            if s.currency != cur or s.cadence not in _SUB_CADENCES:
                 continue
-            interval = _SUB_INTERVALS.get(s.cadence)
-            if interval is None:
-                continue
-            predicted = date.fromisoformat(s.last_charge) + interval
-            if predicted.strftime("%Y-%m") == month and predicted > today:
-                committed += _per_charge_minor(s.cadence, s.monthly_cost_minor)
+            n_charges = _predicted_charges_in_window(s.last_charge, s.cadence, today, month_end)
+            committed += n_charges * _per_charge_minor(s.cadence, s.monthly_cost_minor)
 
         safe = max(0, expected_income_minor - spent_so_far_minor - committed)
         rows.append(ProjectionRow(

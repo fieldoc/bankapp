@@ -177,8 +177,9 @@ def reconcile(conn: sqlite3.Connection, tolerance_minor: int = 0) -> list[Reconc
     dated exactly on the target day is not yet reflected until this snapshot
     (included).
 
-    Bounded cost: one query to pick account+as_of balances, plus one grouped ledger-sum
-    query across all reconcilable accounts -- O(accounts), never per-transaction.
+    Bounded cost: one query to pick account+as_of balances, plus one indexed
+    ledger-sum query per reconcilable account -- O(accounts), never per-transaction
+    (the sums ride the idx_raw_txn_acct_date index).
     """
     # All snapshots, ordered so that within each (account, as_of) group the row we want
     # (latest captured_at; ties broken by highest id, i.e. most-recently-inserted) comes

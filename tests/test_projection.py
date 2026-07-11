@@ -124,6 +124,34 @@ def test_committed_excludes_subscription_charged_already_or_due_next_month(conn)
     assert row.committed_remaining_minor == 0
 
 
+def test_committed_includes_month_end_monthly_biller(conn):
+    # Regression: a monthly biller charged on the 31st. A fixed 30-day step would
+    # predict Jan-31 + 30d = Mar-2 and wrongly drop the ~Feb-28 charge from Feb's
+    # projection. Calendar-month stepping lands it on Feb 28 (clamped).
+    a = insert_account(conn)
+    for i, d in enumerate(["2025-11-30", "2025-12-31", "2026-01-31"]):
+        _txn(conn, a, d, -2000, "month-end biller", f"m{i}")
+    conn.commit()
+
+    rows = projection.month_projection(conn, today=date(2026, 2, 15))
+    row = next(r for r in rows if r.currency == "CAD")
+    assert row.committed_remaining_minor == 2000
+
+
+def test_committed_counts_every_remaining_weekly_charge(conn):
+    # A weekly sub can bill several more times before month-end; count them all,
+    # not just the next one.
+    a = insert_account(conn)
+    for i, d in enumerate(["2026-03-04", "2026-03-11", "2026-03-18", "2026-03-25", "2026-04-01"]):
+        _txn(conn, a, d, -1000, "weekly service", f"w{i}")
+    conn.commit()
+
+    # today Apr 2 -> remaining weekly charges Apr 8/15/22/29 = 4 x per-charge (~1000).
+    rows = projection.month_projection(conn, today=date(2026, 4, 2))
+    row = next(r for r in rows if r.currency == "CAD")
+    assert row.committed_remaining_minor == 4000
+
+
 # ---- CLI smoke test ----------------------------------------------------------
 
 def test_cli_report_projection(app_env):
