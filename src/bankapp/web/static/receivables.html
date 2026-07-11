@@ -34,26 +34,50 @@
       return;
     }
 
-    let rows = "";
-    for (const r of recs) {
-      const settled = r.status === "settled" || r.outstanding_minor === 0;
-      const cls = settled ? "dim" : "";
-      const statusBadge = settled ? `<span class="badge ok">settled</span>` : `<span class="badge pace">${App.esc(r.status)}</span>`;
-      rows +=
-        `<tr class="${cls}">` +
-        `<td class="desc">${App.esc(r.template)}</td>` +
-        `<td>${App.esc(r.period_key)}</td>` +
-        `<td>${statusBadge}</td>` +
-        `<td class="num">${App.fmtMoney(r.expected_minor, "CAD")}</td>` +
-        `<td class="num">${App.fmtMoney(r.received_minor, "CAD")}</td>` +
-        `<td class="num">${App.fmtMoney(r.outstanding_minor, "CAD")}</td>` +
-        `<td class="num">${r.age_days}d</td>` +
-        `</tr>`;
+    function render() {
+      let rows = "";
+      for (const r of recs) {
+        const settled = r.status === "settled" || r.outstanding_minor === 0;
+        const cls = settled ? "dim" : "";
+        const statusBadge = settled ? `<span class="badge ok">settled</span>` : `<span class="badge pace">${App.esc(r.status)}</span>`;
+        const action = r.outstanding_minor > 0
+          ? `<button class="btn mini ghost" data-settle="${r.group_id}">Settle</button>`
+          : "";
+        rows +=
+          `<tr class="${cls}">` +
+          `<td class="desc">${App.esc(r.template)}</td>` +
+          `<td>${App.esc(r.period_key)}</td>` +
+          `<td>${statusBadge}</td>` +
+          `<td class="num">${App.fmtMoney(r.expected_minor, "CAD")}</td>` +
+          `<td class="num">${App.fmtMoney(r.received_minor, "CAD")}</td>` +
+          `<td class="num">${App.fmtMoney(r.settled_minor, "CAD")}</td>` +
+          `<td class="num">${App.fmtMoney(r.outstanding_minor, "CAD")}</td>` +
+          `<td class="num">${r.age_days}d</td>` +
+          `<td>${action}</td>` +
+          `</tr>`;
+      }
+      table.innerHTML =
+        `<table class="tbl"><thead><tr>` +
+        `<th>Template</th><th>Period</th><th>Status</th><th class="num">Expected</th><th class="num">Received</th><th class="num">Settled</th><th class="num">Outstanding</th><th class="num">Age</th><th></th>` +
+        `</tr></thead><tbody>${rows}</tbody></table>`;
+
+      table.querySelectorAll("[data-settle]").forEach((btn) => {
+        btn.onclick = async () => {
+          const groupId = Number(btn.dataset.settle);
+          if (!confirm("Mark this receivable fully settled? This records a manual (non-bank) reimbursement.")) return;
+          btn.disabled = true;
+          try {
+            await App.post("/api/receivables/settle", { group_id: groupId });
+          } catch (_) {
+            btn.disabled = false;
+            return;
+          }
+          App.notice("Marked settled.");
+          location.reload();
+        };
+      });
     }
-    table.innerHTML =
-      `<table class="tbl"><thead><tr>` +
-      `<th>Template</th><th>Period</th><th>Status</th><th class="num">Expected</th><th class="num">Received</th><th class="num">Outstanding</th><th class="num">Age</th>` +
-      `</tr></thead><tbody>${rows}</tbody></table>`;
+    render();
 
     const outstanding = recs.filter((r) => r.outstanding_minor > 0);
     if (!outstanding.length) {

@@ -14,8 +14,9 @@ from pydantic import BaseModel
 
 from bankapp import goals as goalsmod
 from bankapp import money
+from bankapp import receivables as receivablesmod
 from bankapp.classify import engine as classify
-from bankapp.report import advisor, analytics, briefs
+from bankapp.report import advisor, analytics, anomalies, briefs, projection
 from bankapp.web.deps import get_conn
 from bankapp.web.queries import filter_options, receivables_all, transactions_page
 
@@ -51,6 +52,11 @@ def get_digest(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -
     return advisor.digest(conn, request.app.state.cfg)
 
 
+@router.get("/api/changes")
+def get_changes(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    return advisor.digest(conn, request.app.state.cfg)["changes_since_brief"]
+
+
 @router.get("/api/networth")
 def get_networth(conn: sqlite3.Connection = Depends(get_conn)) -> list:
     return [dataclasses.asdict(r) for r in advisor.net_worth(conn)]
@@ -59,6 +65,11 @@ def get_networth(conn: sqlite3.Connection = Depends(get_conn)) -> list:
 @router.get("/api/networth/history")
 def get_networth_history(conn: sqlite3.Connection = Depends(get_conn)) -> list:
     return advisor.net_worth_history(conn)
+
+
+@router.get("/api/reconciliation")
+def get_reconciliation(conn: sqlite3.Connection = Depends(get_conn)) -> list:
+    return [dataclasses.asdict(r) for r in advisor.reconcile(conn)]
 
 
 @router.get("/api/cashflow")
@@ -113,6 +124,16 @@ def get_leaks(
     return [dataclasses.asdict(r) for r in advisor.leaks_from_db(conn, threshold)]
 
 
+@router.get("/api/projection")
+def get_projection(conn: sqlite3.Connection = Depends(get_conn)) -> list:
+    return [dataclasses.asdict(r) for r in projection.month_projection(conn)]
+
+
+@router.get("/api/anomalies")
+def get_anomalies(conn: sqlite3.Connection = Depends(get_conn)) -> list:
+    return [dataclasses.asdict(a) for a in anomalies.anomalies_from_db(conn)]
+
+
 @router.get("/api/goals")
 def get_goals(
     include_archived: bool = False, conn: sqlite3.Connection = Depends(get_conn)
@@ -153,6 +174,26 @@ def get_receivables(conn: sqlite3.Connection = Depends(get_conn)) -> list:
     return receivables_all(conn)
 
 
+class SettleIn(BaseModel):
+    group_id: int
+    amount: Optional[str] = None  # major units, e.g. "60.00"; parsed by money.to_minor
+    note: Optional[str] = None
+
+
+@router.post("/api/receivables/settle")
+def post_receivables_settle(body: SettleIn, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    """Record a manual (non-bank) settlement for a receivable, e.g. a roommate paying
+    their share back in cash. Keyed on template+period under the hood, so it survives
+    the next `match all --rebuild` even though group ids are not stable across it."""
+    amount_minor = money.to_minor(body.amount, "CAD") if body.amount is not None else None
+    try:
+        return receivablesmod.settle_group(
+            conn, body.group_id, amount_minor=amount_minor, note=body.note
+        )
+    except receivablesmod.ReceivableNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
 # ---- write routes (categorization) -----------------------------------------
 # The only mutating endpoints. Both go through the classify engine so the DB
 # invariants (rules-first, manual-override semantics) live in one place.
@@ -168,6 +209,13 @@ class RuleIn(BaseModel):
 
 
 class OneOffIn(BaseModel):
+    category: str
+    role: Optional[str] = None
+    counterparty: Optional[str] = None
+
+
+class BulkCategorizeIn(BaseModel):
+    ids: list[int]
     category: str
     role: Optional[str] = None
     counterparty: Optional[str] = None
@@ -215,6 +263,36 @@ def post_one_off(
         conn, raw_txn_id, body.category, role_hint=body.role, counterparty=body.counterparty
     )
     return {"ok": True}
+
+
+@router.post("/api/transactions/bulk-categorize")
+def post_bulk_categorize(
+    body: BulkCategorizeIn, conn: sqlite3.Connection = Depends(get_conn)
+) -> dict:
+    """Set the same one-off manual category on multiple transactions in a single
+    request (no rule created). One POST carrying the id list, not one per row."""
+    if not body.ids:
+        raise HTTPException(status_code=400, detail="ids must not be empty")
+    category = body.category.strip()
+    if not category:
+        raise HTTPException(status_code=400, detail="category must not be empty")
+
+    placeholders = ",".join("?" for _ in body.ids)
+    rows = conn.execute(
+        f"SELECT id FROM raw_txn WHERE id IN ({placeholders})", tuple(body.ids)
+    ).fetchall()
+    found = {r[0] for r in rows}
+    missing = [i for i in body.ids if i not in found]
+    if missing:
+        raise HTTPException(
+            status_code=400, detail=f"no transaction(s) with id {missing}"
+        )
+
+    for raw_txn_id in body.ids:
+        classify.set_manual_category(
+            conn, raw_txn_id, category, role_hint=body.role, counterparty=body.counterparty
+        )
+    return {"categorized": len(body.ids)}
 
 
 # ---- goals ------------------------------------------------------------------

@@ -21,6 +21,16 @@
 
   <div class="chipset" id="subtotals"></div>
 
+  <div class="bulk-bar" id="bulk-bar" hidden>
+    <span id="bulk-count">0 selected</span>
+    <div class="fld">
+      <input id="bulk-cat" list="bulk-cat-options" placeholder="category..." />
+      <datalist id="bulk-cat-options"></datalist>
+    </div>
+    <button class="btn" id="bulk-apply">Categorize selected</button>
+    <button class="btn ghost" id="bulk-clear">Clear</button>
+  </div>
+
   <section class="block">
     <div class="panel scroll-x" id="tx-panel"></div>
     <div class="pager" id="pager"></div>
@@ -81,6 +91,11 @@
       renderTable(data.items || []);
       renderPager(data);
       loadSpend();
+      // Checkboxes are rebuilt fresh (unchecked) by renderTable(); keep the
+      // selection set and bulk bar in sync rather than pointing at stale ids.
+      // (load() is only ever invoked after selectedIds/updateBulkBar are declared below.)
+      selectedIds.clear();
+      updateBulkBar();
     }
 
     function renderSubtotals(subs) {
@@ -106,11 +121,16 @@
           ? `<span class="strike">${App.fmtMoney(t.amount_minor, t.currency)}</span> <span class="muted">0.00</span>`
           : moneyCell(t.effective_minor, t.currency);
         const roleBadge = t.group_role ? `<span class="badge role">${App.esc(t.group_role)}</span>` : "";
-        const catCell = t.category === "(uncategorized)"
+        const uncategorized = t.category === "(uncategorized)";
+        const catCell = uncategorized
           ? `<button class="btn mini cat-btn" data-id="${t.id}" data-desc="${App.esc(t.description_norm)}">＋ categorize</button>`
           : App.esc(t.category);
+        const checkCell = uncategorized
+          ? `<td><input type="checkbox" class="tx-check" data-id="${t.id}"></td>`
+          : `<td></td>`;
         rows +=
           `<tr class="${cls}">` +
+          checkCell +
           `<td>${App.esc(t.posted_date)}</td>` +
           `<td>${App.esc(t.account_key)}</td>` +
           `<td class="desc">${App.esc(t.description_norm)} ${roleBadge}</td>` +
@@ -120,7 +140,7 @@
       }
       panel.innerHTML =
         `<table class="tbl"><thead><tr>` +
-        `<th>Date</th><th>Account</th><th>Description</th><th>Category</th><th class="num">Effective</th>` +
+        `<th></th><th>Date</th><th>Account</th><th>Description</th><th>Category</th><th class="num">Effective</th>` +
         `</tr></thead><tbody>${rows}</tbody></table>`;
     }
 
@@ -317,6 +337,69 @@
       document.body.appendChild(overlay);
       catInput.focus();
     }
+
+    // ---- bulk categorize -----------------------------------------------------
+    const selectedIds = new Set();
+
+    function fillBulkCategoryOptions() {
+      const dl = App.el("bulk-cat-options");
+      dl.innerHTML = "";
+      for (const c of categories()) {
+        const o = document.createElement("option");
+        o.value = c;
+        dl.appendChild(o);
+      }
+    }
+    fillBulkCategoryOptions();
+
+    function updateBulkBar() {
+      const bar = App.el("bulk-bar");
+      if (selectedIds.size === 0) { bar.hidden = true; return; }
+      bar.hidden = false;
+      App.el("bulk-count").textContent = `${selectedIds.size} selected`;
+    }
+
+    function clearSelection() {
+      selectedIds.clear();
+      for (const cb of document.querySelectorAll(".tx-check")) cb.checked = false;
+      updateBulkBar();
+    }
+
+    // Delegated change: checkboxes are recreated on every renderTable(), so
+    // listen on the panel (which persists) rather than on each checkbox.
+    App.el("tx-panel").addEventListener("change", (e) => {
+      const cb = e.target.closest(".tx-check");
+      if (!cb) return;
+      const id = Number(cb.dataset.id);
+      if (cb.checked) selectedIds.add(id); else selectedIds.delete(id);
+      updateBulkBar();
+    });
+
+    App.el("bulk-clear").onclick = clearSelection;
+
+    App.el("bulk-apply").onclick = async () => {
+      const category = App.el("bulk-cat").value.trim();
+      if (!category) { App.banner("Enter a category to apply."); return; }
+      if (selectedIds.size === 0) return;
+      const ids = [...selectedIds];
+      const btn = App.el("bulk-apply");
+      btn.disabled = true;
+      try {
+        const res = await App.post("/api/transactions/bulk-categorize", { ids, category });
+        App.notice(`${res.categorized} transaction(s) categorized.`);
+        App.el("bulk-cat").value = "";
+        App.meta = null;                 // categories may have grown
+        meta = await App.loadMeta();
+        fillSelect("f-category", meta.categories, "All categories");
+        fillBulkCategoryOptions();
+        selectedIds.clear();             // rows disappear from the uncategorized set on reload
+        load();
+      } catch (_) {
+        // App.post already surfaced the error
+      } finally {
+        btn.disabled = false;
+      }
+    };
 
     App.el("apply").onclick = () => { page = 1; load(); };
     App.el("clear").onclick = () => {

@@ -15,8 +15,20 @@ _AS_OF_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _VALID_SOURCES = {"claude", "manual"}
 
 
-def add_brief(conn: sqlite3.Connection, content_md: str, digest_as_of: str, source: str = "claude") -> int:
-    """Insert a new brief row. Raises ValueError on invalid input."""
+def add_brief(
+    conn: sqlite3.Connection,
+    content_md: str,
+    digest_as_of: str,
+    source: str = "claude",
+    digest_json: Optional[str] = None,
+) -> int:
+    """Insert a new brief row. Raises ValueError on invalid input.
+
+    `digest_json`, when provided, should be the JSON-serialized PURE digest() dict
+    (i.e. without the volatile "changes_since_brief" key) this brief was based on --
+    it becomes the "prior" snapshot for a future digest's changes_since_brief. Older
+    briefs (or callers that don't pass it) store NULL and are ignored as a prior.
+    """
     if not content_md or not content_md.strip():
         raise ValueError("content_md must not be empty")
     if not _AS_OF_RE.match(digest_as_of):
@@ -26,8 +38,9 @@ def add_brief(conn: sqlite3.Connection, content_md: str, digest_as_of: str, sour
 
     with conn:
         cur = conn.execute(
-            "INSERT INTO advisor_brief(created_at, digest_as_of, content_md, source) VALUES (?,?,?,?)",
-            (_utc_now_iso(), digest_as_of, content_md, source),
+            "INSERT INTO advisor_brief(created_at, digest_as_of, content_md, source, digest_json) "
+            "VALUES (?,?,?,?,?)",
+            (_utc_now_iso(), digest_as_of, content_md, source, digest_json),
         )
     return cur.lastrowid
 

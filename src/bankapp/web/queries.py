@@ -137,7 +137,7 @@ def receivables_all(conn: sqlite3.Connection) -> list[dict]:
     """Full receivables history (including settled), newest period first."""
     rows = conn.execute(
         """SELECT group_id, template, period_key, status, expense_minor, expected_minor,
-                  received_minor, outstanding_minor, age_days
+                  received_minor, settled_minor, outstanding_minor, age_days
            FROM v_receivables
            ORDER BY period_key DESC"""
     )

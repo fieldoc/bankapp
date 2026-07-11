@@ -9,10 +9,13 @@ engine for the frugally-luxurious mission: surface money slipping away unnoticed
 from __future__ import annotations
 
 import calendar
+import dataclasses
+import json
 import sqlite3
 import statistics
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from typing import Iterable, Optional
 
 from bankapp.ingest.core import _utc_now_iso
@@ -103,6 +106,131 @@ def net_worth_history(conn: sqlite3.Connection) -> list[dict]:
            ORDER BY b.currency, m.month"""
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def consolidated_net_worth(conn: sqlite3.Connection, target: str = "CAD") -> dict:
+    """Consolidate per-currency net worth into a single `target`-currency total
+    using manually-entered FX rates (bankapp.fx).
+
+    Single pass over the net_worth() rows (a handful of currencies), not
+    per-account -- conversion cost is O(currencies), never N+1. A held currency
+    with no stored rate to `target` is reported unconverted (converted_minor=None)
+    and lands in `unconverted`; it is excluded from total_minor rather than being
+    silently converted at 0 or dropped without mention.
+    """
+    from bankapp import fx
+
+    target = target.upper()
+    components: list[dict] = []
+    unconverted: list[str] = []
+    total_minor = 0
+    for row in net_worth(conn):
+        cur = row.currency
+        rate = Decimal(1) if cur == target else fx.latest_rate(conn, cur, target)
+        converted = row.net_worth_minor if cur == target else (
+            fx.convert_minor(conn, row.net_worth_minor, cur, target) if rate is not None else None
+        )
+        components.append({
+            "currency": cur,
+            "net_worth_minor": row.net_worth_minor,
+            "rate": str(rate) if rate is not None else None,
+            "converted_minor": converted,
+        })
+        if converted is None:
+            unconverted.append(cur)
+        else:
+            total_minor += converted
+    return {
+        "target": target,
+        "total_minor": total_minor,
+        "components": components,
+        "unconverted": unconverted,
+    }
+
+
+# ---- S4 balance reconciliation -----------------------------------------------
+
+@dataclass(frozen=True)
+class ReconcileRow:
+    account_key: str
+    currency: str
+    status: str                          # 'ok' | 'drift' | 'unverified'
+    anchor_as_of: Optional[str]
+    target_as_of: Optional[str]
+    expected_delta_minor: Optional[int]  # target_balance - anchor_balance
+    ledger_delta_minor: Optional[int]    # SUM(raw_txn.amount_minor) in the interval
+    drift_minor: Optional[int]           # expected_delta - ledger_delta (0 when ok)
+
+
+def reconcile(conn: sqlite3.Connection, tolerance_minor: int = 0) -> list[ReconcileRow]:
+    """Verify each account's snapshot history agrees with the immutable ledger.
+
+    For each account with balance_snapshot rows, first collapses to ONE balance per
+    distinct as_of (multiple sources can share a day) by taking the row with the
+    latest captured_at for that account+as_of. The earliest remaining as_of is the
+    `anchor`, the latest is the `target`.
+
+    A snapshot's balance is read as "everything posted up to and including its
+    as_of date". So the ledger window for the anchor->target interval is
+    posted_date > anchor.as_of AND posted_date <= target.as_of: a txn dated exactly
+    on the anchor day is already baked into the anchor balance (excluded), while one
+    dated exactly on the target day is not yet reflected until this snapshot
+    (included).
+
+    Bounded cost: one query to pick account+as_of balances, plus one indexed
+    ledger-sum query per reconcilable account -- O(accounts), never per-transaction
+    (the sums ride the idx_raw_txn_acct_date index).
+    """
+    # All snapshots, ordered so that within each (account, as_of) group the row we want
+    # (latest captured_at; ties broken by highest id, i.e. most-recently-inserted) comes
+    # first. Collapsing to one-per-as_of happens in Python below, which sidesteps the
+    # ambiguity a SQL self-join on MAX(captured_at) would have if two sources tie exactly.
+    snap_rows = conn.execute(
+        """SELECT b.account_id, b.as_of, b.balance_minor, a.key AS account_key, a.currency
+           FROM balance_snapshot b
+           JOIN accounts a ON a.id = b.account_id
+           ORDER BY b.account_id, b.as_of, b.captured_at DESC, b.id DESC"""
+    ).fetchall()
+
+    by_account: dict[int, list[sqlite3.Row]] = {}
+    seen_as_of: dict[int, set] = {}
+    for r in snap_rows:
+        acct_seen = seen_as_of.setdefault(r["account_id"], set())
+        if r["as_of"] in acct_seen:
+            continue  # a later (lower-priority) row for an as_of we already picked
+        acct_seen.add(r["as_of"])
+        by_account.setdefault(r["account_id"], []).append(r)
+    for acct_id, rows_ in by_account.items():
+        rows_.sort(key=lambda r: r["as_of"])
+
+    rows: list[ReconcileRow] = []
+    for account_id, snaps in by_account.items():
+        account_key = snaps[0]["account_key"]
+        currency = snaps[0]["currency"]
+        if len(snaps) < 2:
+            single = snaps[0]
+            rows.append(ReconcileRow(
+                account_key=account_key, currency=currency, status="unverified",
+                anchor_as_of=single["as_of"], target_as_of=single["as_of"],
+                expected_delta_minor=None, ledger_delta_minor=None, drift_minor=None,
+            ))
+            continue
+        anchor, target = snaps[0], snaps[-1]
+        expected_delta = target["balance_minor"] - anchor["balance_minor"]
+        ledger_delta = conn.execute(
+            """SELECT COALESCE(SUM(amount_minor), 0) FROM raw_txn
+               WHERE account_id = ? AND posted_date > ? AND posted_date <= ?""",
+            (account_id, anchor["as_of"], target["as_of"]),
+        ).fetchone()[0]
+        drift = expected_delta - ledger_delta
+        status = "ok" if abs(drift) <= tolerance_minor else "drift"
+        rows.append(ReconcileRow(
+            account_key=account_key, currency=currency, status=status,
+            anchor_as_of=anchor["as_of"], target_as_of=target["as_of"],
+            expected_delta_minor=expected_delta, ledger_delta_minor=ledger_delta,
+            drift_minor=drift,
+        ))
+    return sorted(rows, key=lambda r: r.account_key)
 
 
 # ---- T9.1 cashflow / savings ------------------------------------------------
@@ -481,10 +609,80 @@ def _dq_notes(conn: sqlite3.Connection) -> dict:
     }
 
 
+def _changes_since_brief(conn: sqlite3.Connection, current: dict) -> dict:
+    """Diff the in-progress digest `current` (already fully built EXCEPT the
+    "changes_since_brief" key -- so this never recurses) against the most recent
+    persisted brief that carries a pure digest_json snapshot.
+
+    Returns {"has_prior": bool, "since": Optional[str], "changes": [{"kind", "detail"}]}.
+    With no such brief, has_prior is False and changes is empty -- never an error (A6).
+    """
+    from bankapp import money
+
+    row = conn.execute(
+        """SELECT digest_json, digest_as_of, created_at FROM advisor_brief
+           WHERE digest_json IS NOT NULL ORDER BY id DESC LIMIT 1"""
+    ).fetchone()
+    if row is None:
+        return {"has_prior": False, "since": None, "changes": []}
+
+    prior = json.loads(row["digest_json"])
+    changes: list[dict] = []
+
+    # new_subscription: merchant+currency present now but not in the prior snapshot.
+    prior_subs = {(s["merchant"], s["currency"]) for s in prior.get("subscriptions", [])}
+    for s in current.get("subscriptions", []):
+        if (s["merchant"], s["currency"]) not in prior_subs:
+            amt = money.from_minor(s["monthly_cost_minor"], s["currency"])
+            changes.append({
+                "kind": "new_subscription",
+                "detail": f"{s['merchant']} (${amt}/mo)",
+            })
+
+    # budget_over: category now over budget that was not over in the prior snapshot.
+    prior_over = {b["category"] for b in prior.get("budgets", []) if b.get("over")}
+    for b in current.get("budgets", []):
+        if b["over"] and b["category"] not in prior_over:
+            changes.append({
+                "kind": "budget_over",
+                "detail": f"{b['category']} now over budget",
+            })
+
+    # goal_off_pace: goal now behind that was not behind (by name) in the prior snapshot.
+    prior_behind = {g["name"] for g in prior.get("goals", []) if g.get("pace") == "behind"}
+    for g in current.get("goals", []):
+        if g["pace"] == "behind" and g["name"] not in prior_behind:
+            changes.append({
+                "kind": "goal_off_pace",
+                "detail": f"{g['name']} fell behind pace",
+            })
+
+    # net_worth: per-currency total delta since the snapshot, skipping currencies not
+    # held in both (nothing to compare -- not a "change").
+    prior_nw = {nw["currency"]: nw["net_worth_minor"] for nw in prior.get("net_worth", [])}
+    for nw in current.get("net_worth", []):
+        cur = nw["currency"]
+        if cur not in prior_nw:
+            continue
+        delta_minor = nw["net_worth_minor"] - prior_nw[cur]
+        if delta_minor == 0:
+            continue
+        delta = money.from_minor(delta_minor, cur)
+        sign = "+" if delta_minor > 0 else ""
+        changes.append({
+            "kind": "net_worth",
+            "detail": f"{cur} net worth {sign}${delta} since last brief",
+        })
+
+    return {"has_prior": True, "since": row["digest_as_of"], "changes": changes}
+
+
 def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
     """Bundle the advisor state as a stable-keyed dict (the advisor skill's JSON input)."""
     today = today or date.today()
     month = today.strftime("%Y-%m")
+    from bankapp.report import anomalies, projection
+
     cashflow = monthly_cashflow(conn, months=6)  # last 6 distinct months, all currencies
     history = net_worth_history(conn)
 
@@ -497,7 +695,7 @@ def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
         if len(series) >= 2:
             nw_delta[cur] = series[-1]["net_worth_minor"] - series[-2]["net_worth_minor"]
 
-    return {
+    d = {
         "as_of": today.isoformat(),
         "month": month,
         "net_worth": [
@@ -506,6 +704,7 @@ def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
         ],
         "net_worth_split": net_worth_split(conn),  # accessible vs locked per currency
         "net_worth_delta_minor": nw_delta,
+        "net_worth_consolidated": consolidated_net_worth(conn, "CAD"),
         "savings": [
             {"month": r.month, "currency": r.currency, "income_minor": r.income_minor,
              "spend_minor": r.spend_minor, "net_minor": r.net_minor, "savings_rate": round(r.savings_rate, 4)}
@@ -540,6 +739,8 @@ def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
              "pct_complete": round(g.pct_complete, 2), "pace": g.pace}
             for g in goals_status(conn, today)
         ],
+        "projection": [dataclasses.asdict(r) for r in projection.month_projection(conn, today)],
+        "anomalies": [dataclasses.asdict(a) for a in anomalies.anomalies_from_db(conn, today)],
         "uncategorized_count": _uncategorized_count(conn),
         "pending_transfer_legs": [
             {"id": r["id"], "amount_minor": r["amount_minor"], "age_days": r["age_days"]}
@@ -547,6 +748,8 @@ def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
         ],
         "data_quality": _dq_notes(conn),
     }
+    d["changes_since_brief"] = _changes_since_brief(conn, d)
+    return d
 
 
 def _uncategorized_count(conn: sqlite3.Connection) -> int:

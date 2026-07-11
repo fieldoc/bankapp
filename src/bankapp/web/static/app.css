@@ -200,6 +200,17 @@ table.tbl tr.netted td { color: var(--faint); }
 .btn.ghost:hover { color: var(--ink); }
 .btn:disabled { opacity: .4; cursor: default; }
 
+/* ---------- bulk categorize bar ---------- */
+.bulk-bar {
+  display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+  background: var(--panel-2); border: 1px solid var(--edge); border-radius: 10px;
+  padding: 10px 14px; margin-bottom: 14px;
+}
+.bulk-bar[hidden] { display: none; }
+.bulk-bar #bulk-count { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.bulk-bar .fld { display: flex; }
+.bulk-bar input { min-width: 180px; }
+
 /* ---------- pagination ---------- */
 .pager { display: flex; align-items: center; gap: 14px; margin-top: 16px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
 

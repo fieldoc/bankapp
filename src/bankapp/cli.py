@@ -41,6 +41,10 @@ goals_app = typer.Typer(help="Savings goals.")
 app.add_typer(goals_app, name="goals")
 advice_app = typer.Typer(help="Persisted advisor briefs (Claude coaching output).")
 app.add_typer(advice_app, name="advice")
+fx_app = typer.Typer(help="Manually-entered FX rates.")
+app.add_typer(fx_app, name="fx")
+receivables_app = typer.Typer(help="Split-expense receivables (AR-lite).")
+app.add_typer(receivables_app, name="receivables")
 
 _OFX_EXTS = {".ofx", ".qfx"}
 _CSV_EXTS = {".csv"}
@@ -451,6 +455,96 @@ def rules_set_counterparty(
                f"{n} transaction(s) re-stamped.")
 
 
+@receivables_app.command("list")
+def receivables_list() -> None:
+    """List all split-expense receivables (template, period, expected/received/settled/outstanding, age)."""
+    from bankapp import money
+
+    _, conn = _load()
+    rows = conn.execute(
+        """SELECT template, period_key, status, expected_minor, received_minor,
+                  settled_minor, outstanding_minor, age_days
+           FROM v_receivables ORDER BY period_key DESC"""
+    ).fetchall()
+    if not rows:
+        typer.echo("No receivables.")
+        return
+    for r in rows:
+        typer.echo(
+            f"{r['template']} {r['period_key']} [{r['status']}] "
+            f"expected={money.from_minor(r['expected_minor'], 'CAD')} "
+            f"received={money.from_minor(r['received_minor'], 'CAD')} "
+            f"settled={money.from_minor(r['settled_minor'], 'CAD')} "
+            f"outstanding={money.from_minor(r['outstanding_minor'], 'CAD')} "
+            f"age={r['age_days']}d"
+        )
+
+
+@receivables_app.command("settle")
+def receivables_settle(
+    template: str = typer.Option(..., "--template", help="Template name, as in `rules list` / config."),
+    period: str = typer.Option(..., "--period", help="Period key, 'YYYY-MM'."),
+    amount: Optional[str] = typer.Option(
+        None, "--amount", help="Major units to record as settled. Default: full outstanding non-bank amount."
+    ),
+    note: Optional[str] = typer.Option(None, "--note"),
+) -> None:
+    """Mark a receivable settled (e.g. a roommate paid their share back in cash).
+    Survives `finance match all --rebuild` -- it is keyed on template+period, not
+    on the (rebuildable) group id."""
+    from bankapp import money
+    from bankapp import receivables as receivablesmod
+
+    _, conn = _load()
+    amount_minor = money.to_minor(amount, "CAD") if amount is not None else None
+    try:
+        result = receivablesmod.settle_by_template(
+            conn, template, period, amount_minor=amount_minor, note=note
+        )
+    except receivablesmod.ReceivableNotFound as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"Settled {money.from_minor(result['settled_minor'], 'CAD')} for "
+        f"{result['template']} {result['period_key']}; "
+        f"outstanding now {money.from_minor(result['outstanding_minor'], 'CAD')}."
+    )
+
+
+@fx_app.command("set")
+def fx_set(
+    pair: str = typer.Option(..., "--pair", help="BASE/QUOTE, e.g. USD/CAD"),
+    rate: str = typer.Option(..., "--rate"),
+    as_of: Optional[str] = typer.Option(None, "--as-of", help="YYYY-MM-DD; default today."),
+) -> None:
+    """Set (upsert) a manually-entered FX rate. Re-running for the same pair/day
+    updates it -- latest wins, no duplicate rows."""
+    from bankapp import fx
+
+    _, conn = _load()
+    try:
+        base, quote = pair.upper().split("/", 1)
+    except ValueError:
+        typer.echo(f"Invalid --pair {pair!r}; expected BASE/QUOTE, e.g. USD/CAD")
+        raise typer.Exit(code=1)
+    fx.set_rate(conn, base, quote, rate, as_of=as_of)
+    typer.echo(f"Rate set: 1 {base} = {rate} {quote} (as of {as_of or date.today().isoformat()})")
+
+
+@fx_app.command("list")
+def fx_list() -> None:
+    """List stored FX rates (latest per pair)."""
+    from bankapp import fx
+
+    _, conn = _load()
+    rates = fx.list_rates(conn)
+    if not rates:
+        typer.echo("No FX rates set.")
+        return
+    for r in rates:
+        typer.echo(f"{r['base']}/{r['quote']} = {r['rate']} (as of {r['as_of']})")
+
+
 @review_app.command("count")
 def review_count() -> None:
     """Print the number of uncategorized transactions."""
@@ -604,6 +698,26 @@ def report_savings(months: Optional[int] = typer.Option(None, "--months", help="
         prev[r.currency] = r.net_minor
 
 
+@report_app.command("projection")
+def report_projection() -> None:
+    """Per-currency safe-to-spend for the current month: expected income minus
+    spent-so-far minus committed-remaining, floored at 0."""
+    from bankapp import money
+    from bankapp.report import projection
+
+    _, conn = _load()
+    rows = projection.month_projection(conn)
+    if not rows:
+        typer.echo("No data yet.")
+        return
+    for r in rows:
+        typer.echo(f"{r.month} {r.currency}")
+        typer.echo(f"  expected income      {money.from_minor(r.expected_income_minor, r.currency):>12} {r.currency}")
+        typer.echo(f"  spent so far         {money.from_minor(r.spent_so_far_minor, r.currency):>12} {r.currency}")
+        typer.echo(f"  committed remaining  {money.from_minor(r.committed_remaining_minor, r.currency):>12} {r.currency}")
+        typer.echo(f"  safe to spend        {money.from_minor(r.safe_to_spend_minor, r.currency):>12} {r.currency}")
+
+
 @budget_app.command("status")
 def budget_status_cmd(month: str = typer.Option(..., "--month", help="YYYY-MM")) -> None:
     """Per-category actual vs limit for a month, with over/pace warnings."""
@@ -663,6 +777,50 @@ def report_leaks(threshold: str = typer.Option("15.00", "--threshold", help="Dol
         )
 
 
+@report_app.command("reconcile")
+def report_reconcile() -> None:
+    """Per account: does the bank-provided balance match the summed ledger between
+    snapshots? Flags drift with the amount."""
+    from bankapp import money
+    from bankapp.report import advisor
+
+    _, conn = _load()
+    rows = advisor.reconcile(conn)
+    if not rows:
+        typer.echo("No balance snapshots yet.")
+        return
+    any_drift = False
+    for r in rows:
+        if r.status == "unverified":
+            typer.echo(f"  {r.account_key:20} only one snapshot ({r.anchor_as_of}) — cannot reconcile")
+            continue
+        flag = "  [DRIFT]" if r.status == "drift" else ""
+        if r.status == "drift":
+            any_drift = True
+        typer.echo(
+            f"  {r.account_key:20} {r.anchor_as_of} -> {r.target_as_of}  "
+            f"expected {money.from_minor(r.expected_delta_minor, r.currency):>10} {r.currency}  "
+            f"ledger {money.from_minor(r.ledger_delta_minor, r.currency):>10} {r.currency}  "
+            f"drift {money.from_minor(r.drift_minor, r.currency):>10} {r.currency}{flag}"
+        )
+    if not any_drift:
+        typer.echo("All accounts reconciled.")
+
+
+@report_app.command("anomalies")
+def report_anomalies() -> None:
+    """Money-affecting oddities: unusual charges, stopped subscriptions, duplicates."""
+    from bankapp.report import anomalies
+
+    _, conn = _load()
+    rows = anomalies.anomalies_from_db(conn)
+    if not rows:
+        typer.echo("No anomalies.")
+        return
+    for a in rows:
+        typer.echo(f"  [{a.kind}] {a.merchant} - {a.detail}")
+
+
 @goals_app.command("status")
 def goals_status_cmd() -> None:
     """Per-goal funded (net savings since start x allocation), % complete, pace."""
@@ -701,7 +859,7 @@ def digest(format: str = typer.Option("markdown", "--format", help="markdown | j
 def status() -> None:
     """Dashboard: uncategorized, pending transfers (aged), receivables, last sync/import."""
     from bankapp import money
-    from bankapp.report import analytics
+    from bankapp.report import advisor, analytics
 
     cfg, conn = _load()
     st = analytics.status(conn, cfg.transfers.window_days)
@@ -729,6 +887,12 @@ def status() -> None:
     typer.echo(f"Last Plaid sync: {plaid_sync or '(never)'}")
     if plaid_err:
         typer.echo(f"Last Plaid error: {plaid_err}")
+
+    drift_count = sum(1 for r in advisor.reconcile(conn) if r.status == "drift")
+    if drift_count:
+        typer.echo(f"Reconciliation: {drift_count} account(s) with drift — run 'finance report reconcile'")
+    else:
+        typer.echo("Reconciliation: all accounts reconciled")
 
 
 @app.command()
@@ -791,15 +955,20 @@ def advice_add(
     source: str = typer.Option("claude", "--source", help="claude | manual"),
 ) -> None:
     """Persist an advisor brief (Claude coaching output). Reads --file or stdin."""
-    from bankapp.report import briefs
+    import json
+
+    from bankapp.report import advisor, briefs
 
     if as_of is None:
         as_of = date.today().isoformat()
     content_md = Path(file).read_text(encoding="utf-8") if file is not None else sys.stdin.read()
 
-    _, conn = _load()
+    cfg, conn = _load()
+    d = advisor.digest(conn, cfg)
+    d.pop("changes_since_brief", None)  # store the PURE snapshot -- no recursion
+    digest_json = json.dumps(d)
     try:
-        brief_id = briefs.add_brief(conn, content_md, as_of, source=source)
+        brief_id = briefs.add_brief(conn, content_md, as_of, source=source, digest_json=digest_json)
     except ValueError as exc:
         typer.echo(f"Error: {exc}")
         raise typer.Exit(1)
