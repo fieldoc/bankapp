@@ -71,6 +71,11 @@ FALLBACK_GROUP = "Other"
 # named "income".
 _INCOME_KEY = "inc:Income"
 _SAVINGS_KEY = "sav:Savings"
+# Overspent months: the shortfall is drawn from savings/balance. Modeled as an
+# explicit income-side source so the Income node has a visible origin for every
+# dollar it emits (mirrors the Savings sink of a surplus month), instead of a
+# sourceless gap left by the renderer's max-sizing.
+_DRAWDOWN_KEY = "src:From savings"
 
 
 def income_source_label(description_norm: Optional[str]) -> str:
@@ -188,12 +193,16 @@ def month_flows(
     for grp_key, total in sorted(group_totals.items(), key=lambda kv: (-kv[1], kv[0])):
         links.append(FlowLink(_INCOME_KEY, grp_key, total))
 
-    # 4. Savings: the leftover. Positive -> a terminal band; overspent -> omitted
-    #    (the renderer widens the Income node honestly and prints "Overspent by X").
+    # 4. Savings: the leftover. Positive -> a terminal band out of Income.
+    #    Overspent -> a "From savings" source band INTO Income covering the
+    #    shortfall, so the Income node is fully sourced either way.
     savings = income_total - spend_total
     if savings > 0:
         labels[_SAVINGS_KEY] = "Savings"
         links.append(FlowLink(_INCOME_KEY, _SAVINGS_KEY, savings))
+    elif savings < 0:
+        labels[_DRAWDOWN_KEY] = "From savings"
+        links.append(FlowLink(_DRAWDOWN_KEY, _INCOME_KEY, -savings))
 
     return MonthFlows(
         month=month,

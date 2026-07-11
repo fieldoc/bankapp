@@ -100,6 +100,7 @@
           if (l.source.startsWith("grp:")) catToGroup[l.target] = l.source;
         }
         const nodeColor = (key) => {
+          if (key === "src:From savings") return App.cssVar("--warn"); // drawdown, not real income
           if (key.startsWith("src:") || key === "inc:Income") return App.cssVar("--pos");
           if (key === "sav:Savings") return App.cssVar("--accent");
           if (key.startsWith("grp:")) return groupColor[key] || App.cssVar("--muted");
