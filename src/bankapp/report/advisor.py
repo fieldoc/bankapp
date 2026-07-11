@@ -13,6 +13,7 @@ import sqlite3
 import statistics
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from typing import Iterable, Optional
 
 from bankapp.ingest.core import _utc_now_iso
@@ -103,6 +104,46 @@ def net_worth_history(conn: sqlite3.Connection) -> list[dict]:
            ORDER BY b.currency, m.month"""
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def consolidated_net_worth(conn: sqlite3.Connection, target: str = "CAD") -> dict:
+    """Consolidate per-currency net worth into a single `target`-currency total
+    using manually-entered FX rates (bankapp.fx).
+
+    Single pass over the net_worth() rows (a handful of currencies), not
+    per-account -- conversion cost is O(currencies), never N+1. A held currency
+    with no stored rate to `target` is reported unconverted (converted_minor=None)
+    and lands in `unconverted`; it is excluded from total_minor rather than being
+    silently converted at 0 or dropped without mention.
+    """
+    from bankapp import fx
+
+    target = target.upper()
+    components: list[dict] = []
+    unconverted: list[str] = []
+    total_minor = 0
+    for row in net_worth(conn):
+        cur = row.currency
+        rate = Decimal(1) if cur == target else fx.latest_rate(conn, cur, target)
+        converted = row.net_worth_minor if cur == target else (
+            fx.convert_minor(conn, row.net_worth_minor, cur, target) if rate is not None else None
+        )
+        components.append({
+            "currency": cur,
+            "net_worth_minor": row.net_worth_minor,
+            "rate": str(rate) if rate is not None else None,
+            "converted_minor": converted,
+        })
+        if converted is None:
+            unconverted.append(cur)
+        else:
+            total_minor += converted
+    return {
+        "target": target,
+        "total_minor": total_minor,
+        "components": components,
+        "unconverted": unconverted,
+    }
 
 
 # ---- T9.1 cashflow / savings ------------------------------------------------
@@ -506,6 +547,7 @@ def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
         ],
         "net_worth_split": net_worth_split(conn),  # accessible vs locked per currency
         "net_worth_delta_minor": nw_delta,
+        "net_worth_consolidated": consolidated_net_worth(conn, "CAD"),
         "savings": [
             {"month": r.month, "currency": r.currency, "income_minor": r.income_minor,
              "spend_minor": r.spend_minor, "net_minor": r.net_minor, "savings_rate": round(r.savings_rate, 4)}

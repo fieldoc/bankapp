@@ -226,3 +226,15 @@ CREATE TRIGGER IF NOT EXISTS advisor_brief_no_update BEFORE UPDATE ON advisor_br
 BEGIN SELECT RAISE(ABORT, 'advisor_brief is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS advisor_brief_no_delete BEFORE DELETE ON advisor_brief
 BEGIN SELECT RAISE(ABORT, 'advisor_brief is append-only'); END;
+
+-- Manually-entered FX rates (no external API; local-first). Latest as_of per
+-- (base,quote) wins for conversion.
+CREATE TABLE IF NOT EXISTS fx_rate (
+  id INTEGER PRIMARY KEY,
+  base TEXT NOT NULL,        -- convert FROM, e.g. 'USD'
+  quote TEXT NOT NULL,       -- convert TO, e.g. 'CAD'
+  rate TEXT NOT NULL,        -- decimal string; 1 base = <rate> quote
+  as_of TEXT NOT NULL,       -- 'YYYY-MM-DD'
+  created_at TEXT NOT NULL,  -- ISO-8601 UTC
+  UNIQUE (base, quote, as_of)
+);

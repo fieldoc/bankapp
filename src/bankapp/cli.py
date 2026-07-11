@@ -41,6 +41,8 @@ goals_app = typer.Typer(help="Savings goals.")
 app.add_typer(goals_app, name="goals")
 advice_app = typer.Typer(help="Persisted advisor briefs (Claude coaching output).")
 app.add_typer(advice_app, name="advice")
+fx_app = typer.Typer(help="Manually-entered FX rates.")
+app.add_typer(fx_app, name="fx")
 
 _OFX_EXTS = {".ofx", ".qfx"}
 _CSV_EXTS = {".csv"}
@@ -449,6 +451,40 @@ def rules_set_counterparty(
     n = classify.categorize(conn, recompute_all=True)
     typer.echo(f"Counterparty {'cleared' if not counterparty else 'set to ' + counterparty!r}; "
                f"{n} transaction(s) re-stamped.")
+
+
+@fx_app.command("set")
+def fx_set(
+    pair: str = typer.Option(..., "--pair", help="BASE/QUOTE, e.g. USD/CAD"),
+    rate: str = typer.Option(..., "--rate"),
+    as_of: Optional[str] = typer.Option(None, "--as-of", help="YYYY-MM-DD; default today."),
+) -> None:
+    """Set (upsert) a manually-entered FX rate. Re-running for the same pair/day
+    updates it -- latest wins, no duplicate rows."""
+    from bankapp import fx
+
+    _, conn = _load()
+    try:
+        base, quote = pair.upper().split("/", 1)
+    except ValueError:
+        typer.echo(f"Invalid --pair {pair!r}; expected BASE/QUOTE, e.g. USD/CAD")
+        raise typer.Exit(code=1)
+    fx.set_rate(conn, base, quote, rate, as_of=as_of)
+    typer.echo(f"Rate set: 1 {base} = {rate} {quote} (as of {as_of or date.today().isoformat()})")
+
+
+@fx_app.command("list")
+def fx_list() -> None:
+    """List stored FX rates (latest per pair)."""
+    from bankapp import fx
+
+    _, conn = _load()
+    rates = fx.list_rates(conn)
+    if not rates:
+        typer.echo("No FX rates set.")
+        return
+    for r in rates:
+        typer.echo(f"{r['base']}/{r['quote']} = {r['rate']} (as of {r['as_of']})")
 
 
 @review_app.command("count")
