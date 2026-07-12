@@ -82,8 +82,13 @@
           partial: ["pace", "partial"],
           starved: ["over", "starved"],
         };
-        const chip = chipByStatus[projMap.get(g.id).status];
-        if (chip) badges += ` <span class="badge ${chip[0]}">this month: ${chip[1]}</span>`;
+        const pf = projMap.get(g.id);
+        const chip = chipByStatus[pf.status];
+        if (chip) {
+          const tip = `${App.fmtMoney(pf.allocated_minor, g.currency)} of ` +
+            `${App.fmtMoney(pf.ask_minor, g.currency)} set aside this month`;
+          badges += ` <span class="badge ${chip[0]}" title="${tip}">this month: ${chip[1]}</span>`;
+        }
       }
 
       const amt = isPerpetual
@@ -130,14 +135,18 @@
     }
 
     async function render() {
-      const all = await App.api("/api/goals?include_archived=true");
-
+      // Fire both fetches together — the funding-chip projection doesn't depend
+      // on the goals response, so there's no reason to pay two serial round-trips.
+      const allPromise = App.api("/api/goals?include_archived=true");
       // This-month funding chips are a nice-to-have on top of the goals list —
       // if /api/projection fails, degrade to rows without chips rather than
-      // breaking the page.
+      // breaking the page. (.catch here so a failure can't become an unhandled
+      // rejection while we await the goals fetch first.)
+      const projPromise = App.api("/api/projection").catch(() => []);
+      const all = await allPromise;
       let projMap = new Map();
       try {
-        const projection = await App.api("/api/projection");
+        const projection = await projPromise;
         for (const row of projection) {
           for (const gf of row.goal_funding || []) {
             projMap.set(gf.goal_id, { status: gf.status, allocated_minor: gf.allocated_minor, ask_minor: gf.ask_minor });

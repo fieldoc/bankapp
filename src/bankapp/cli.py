@@ -851,12 +851,21 @@ def goals_status_cmd() -> None:
         return
     for g in rows:
         mode_label = "fixed" if g.funding_mode == "fixed_monthly" else "target"
-        typer.echo(
-            f"  {g.name:20} {money.from_minor(g.funded_minor, g.currency):>12} / "
-            f"{money.from_minor(g.target_minor, g.currency):>12} {g.currency}  "
-            f"({g.pct_complete:.0f}%, {g.pace})"
-            f" [{mode_label} · asks {money.from_minor(g.monthly_ask_minor, g.currency)}/mo · p{g.priority}]"
-        )
+        suffix = f" [{mode_label} · asks {money.from_minor(g.monthly_ask_minor, g.currency)}/mo · p{g.priority}]"
+        if g.funding_mode == "fixed_monthly" and g.target_minor == 0:
+            # Perpetual bucket: "x / 0.00 (0%, no_target)" would read as broken —
+            # mirror the web UI's "{funded} saved" framing instead.
+            typer.echo(
+                f"  {g.name:20} {money.from_minor(g.funded_minor, g.currency):>12} {g.currency} saved"
+                + suffix
+            )
+        else:
+            typer.echo(
+                f"  {g.name:20} {money.from_minor(g.funded_minor, g.currency):>12} / "
+                f"{money.from_minor(g.target_minor, g.currency):>12} {g.currency}  "
+                f"({g.pct_complete:.0f}%, {g.pace})"
+                + suffix
+            )
 
 
 @app.command()
