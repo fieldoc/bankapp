@@ -223,12 +223,17 @@ class BulkCategorizeIn(BaseModel):
 
 class GoalIn(BaseModel):
     name: str
-    target: str  # major units, e.g. "3000.00"; parsed by money.to_minor
+    target: Optional[str] = None  # major units, e.g. "3000.00"; parsed by money.to_minor.
+    # Required (as a positive amount) for funding_mode "target_date"; the domain layer
+    # (goals.check_fields) is what rejects a missing/non-positive one -- see _goal_minors.
     currency: str = "CAD"
     start_date: str
     target_date: Optional[str] = None
     allocation_pct: int = 100
     note: Optional[str] = None
+    funding_mode: str = "target_date"
+    monthly: Optional[str] = None  # major units; parsed like target. Only for fixed_monthly.
+    priority: int = 100
 
 
 @router.post("/api/rules")
@@ -301,20 +306,41 @@ def post_bulk_categorize(
 # cannot resurrect a goal the user got rid of.
 
 
-def _target_minor(body: GoalIn) -> int:
-    """Parse the major-unit target. Currency is gated first: money.exponent_for
-    silently defaults an unknown code to 2 places, which would let a typo through
-    as a goal that matches no transactions and reads 0% funded forever."""
-    if body.currency not in money.known_currencies():
+def _check_currency(currency: str) -> None:
+    """Gate on the known-currency allowlist before any money parsing.
+    money.exponent_for silently defaults an unknown code to 2 places, which would
+    let a typo through as a goal that matches no transactions and reads 0% funded
+    forever."""
+    if currency not in money.known_currencies():
         known = ", ".join(money.known_currencies())
         raise HTTPException(
             status_code=400,
-            detail=f"unknown currency {body.currency!r}; known currencies are {known}",
+            detail=f"unknown currency {currency!r}; known currencies are {known}",
         )
+
+
+def _money_minor(value: Optional[str], currency: str) -> Optional[int]:
+    """Parse a major-unit money string (target or monthly) into minor units.
+    Returns None when value is None so callers can pick their own per-field
+    default -- target maps None -> 0 and lets goals.check_fields reject a missing
+    target_date target with its own message; monthly must stay None so
+    check_fields can distinguish "not set" (required for fixed_monthly) from an
+    explicit value (rejected outside fixed_monthly). Caller must call
+    _check_currency first."""
+    if value is None:
+        return None
     try:
-        return money.to_minor(body.target, body.currency)
+        return money.to_minor(value, currency)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _goal_minors(body: GoalIn) -> tuple[int, Optional[int]]:
+    """Parse a GoalIn's target/monthly strings into (target_minor, monthly_minor)."""
+    _check_currency(body.currency)
+    target_minor = _money_minor(body.target, body.currency)
+    monthly_minor = _money_minor(body.monthly, body.currency)
+    return (target_minor if target_minor is not None else 0), monthly_minor
 
 
 def _write(fn):
@@ -333,11 +359,12 @@ def _write(fn):
 @router.post("/api/goals")
 def post_goal(body: GoalIn, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
     """Create an active goal."""
-    minor = _target_minor(body)
+    target_minor, monthly_minor = _goal_minors(body)
     gid = _write(lambda: goalsmod.create(
-        conn, name=body.name, target_minor=minor, currency=body.currency,
+        conn, name=body.name, target_minor=target_minor, currency=body.currency,
         start_date=body.start_date, target_date=body.target_date,
         allocation_pct=body.allocation_pct, note=body.note,
+        funding_mode=body.funding_mode, monthly_minor=monthly_minor, priority=body.priority,
     ))
     return {"id": gid}
 
@@ -345,11 +372,12 @@ def post_goal(body: GoalIn, conn: sqlite3.Connection = Depends(get_conn)) -> dic
 @router.put("/api/goals/{goal_id}")
 def put_goal(goal_id: int, body: GoalIn, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
     """Full replace, including rename. Keyed on id so the name can change."""
-    minor = _target_minor(body)
+    target_minor, monthly_minor = _goal_minors(body)
     _write(lambda: goalsmod.update(
-        conn, goal_id, name=body.name, target_minor=minor, currency=body.currency,
+        conn, goal_id, name=body.name, target_minor=target_minor, currency=body.currency,
         start_date=body.start_date, target_date=body.target_date,
         allocation_pct=body.allocation_pct, note=body.note,
+        funding_mode=body.funding_mode, monthly_minor=monthly_minor, priority=body.priority,
     ))
     return {"ok": True}
 

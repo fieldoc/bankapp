@@ -796,3 +796,86 @@ def test_unarchive_allocation_breach_is_400(app_env):
 def test_archive_unknown_goal_is_404(app_env):
     client = _goals_client(app_env)
     assert client.post("/api/goals/999/archive").status_code == 404
+
+
+# ---- goal funding modes (slice 3: fixed_monthly / target_date on the wire) --
+
+def test_create_fixed_monthly_goal(app_env):
+    client = _goals_client(app_env)
+    r = client.post("/api/goals", json=_goal_body(
+        target=None, funding_mode="fixed_monthly", monthly="500.00", priority=10,
+    ))
+    assert r.status_code == 200, r.text
+    rows = client.get("/api/goals").json()
+    assert rows[0]["funding_mode"] == "fixed_monthly"
+    assert rows[0]["priority"] == 10
+    assert rows[0]["monthly_minor"] == 50000
+    assert rows[0]["monthly_ask_minor"] == 50000
+
+
+def test_create_target_goal_missing_target_is_400_with_domain_message(app_env):
+    # target omitted for target_date mode -- the domain layer (goals.check_fields)
+    # rejects it with its own "target must be greater than zero" message; the API
+    # must not invent a different pre-check message.
+    client = _goals_client(app_env)
+    r = client.post("/api/goals", json=_goal_body(target=None))
+    assert r.status_code == 400
+    assert "target must be greater than zero" in r.json()["detail"]
+
+
+def test_create_fixed_monthly_goal_missing_monthly_is_400(app_env):
+    client = _goals_client(app_env)
+    r = client.post("/api/goals", json=_goal_body(target=None, funding_mode="fixed_monthly"))
+    assert r.status_code == 400
+    assert "monthly must be greater than zero" in r.json()["detail"]
+
+
+def test_create_target_goal_with_monthly_set_is_400(app_env):
+    client = _goals_client(app_env)
+    r = client.post("/api/goals", json=_goal_body(monthly="100.00"))
+    assert r.status_code == 400
+    assert "monthly must not be set" in r.json()["detail"]
+
+
+def test_create_fixed_monthly_goal_rejects_bad_precision_monthly(app_env):
+    client = _goals_client(app_env)
+    r = client.post("/api/goals", json=_goal_body(
+        target=None, funding_mode="fixed_monthly", monthly="500.001",
+    ))
+    assert r.status_code == 400
+    assert "precision" in r.json()["detail"]
+
+
+def test_update_goal_switches_to_fixed_monthly(app_env):
+    client = _goals_client(app_env)
+    gid = client.post("/api/goals", json=_goal_body()).json()["id"]
+    r = client.put(f"/api/goals/{gid}", json=_goal_body(
+        target="0.00", funding_mode="fixed_monthly", monthly="250.00",
+    ))
+    assert r.status_code == 200, r.text
+    row = client.get("/api/goals").json()[0]
+    assert row["funding_mode"] == "fixed_monthly"
+    assert row["monthly_minor"] == 25000
+    assert row["target_minor"] == 0
+
+
+def test_projection_endpoint_includes_goal_funding(app_env):
+    client = _goals_client(app_env)
+    client.post("/api/goals", json=_goal_body(
+        target=None, funding_mode="fixed_monthly", monthly="100.00", priority=5,
+    ))
+    r = client.get("/api/projection")
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body, list)
+    cad_row = next((row for row in body if row["currency"] == "CAD"), None)
+    assert cad_row is not None
+    for key in ("need_to_save_minor", "like_to_save_minor",
+                "savings_allocated_minor", "savings_shortfall_minor"):
+        assert key in cad_row
+    assert isinstance(cad_row["goal_funding"], list)
+    assert cad_row["goal_funding"]
+    gf = cad_row["goal_funding"][0]
+    for key in ("goal_id", "name", "funding_mode", "priority", "ask_minor",
+                "allocated_minor", "status"):
+        assert key in gf

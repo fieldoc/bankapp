@@ -290,6 +290,11 @@ def test_negative_available_starves_every_goal(conn):
     assert all(gf.allocated_minor == 0 for gf in row.goal_funding)
     assert row.safe_to_spend_minor == 0
     assert row.savings_shortfall_minor == 5000 + 3000
+    # need_to_save/like_to_save are the SUM OF ASKS, not allocated -- every goal
+    # here is starved (allocated_minor == 0), yet the tier totals still reflect
+    # what was asked for.
+    assert row.need_to_save_minor == 5000
+    assert row.like_to_save_minor == 3000
     _assert_safe_to_spend_invariant(row)
 
 

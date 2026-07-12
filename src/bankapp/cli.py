@@ -701,7 +701,8 @@ def report_savings(months: Optional[int] = typer.Option(None, "--months", help="
 @report_app.command("projection")
 def report_projection() -> None:
     """Per-currency safe-to-spend for the current month: expected income minus
-    spent-so-far minus committed-remaining, floored at 0."""
+    spent-so-far minus committed-remaining minus the need-to-save/like-to-save
+    goal buckets, floored at 0."""
     from bankapp import money
     from bankapp.report import projection
 
@@ -715,7 +716,23 @@ def report_projection() -> None:
         typer.echo(f"  expected income      {money.from_minor(r.expected_income_minor, r.currency):>12} {r.currency}")
         typer.echo(f"  spent so far         {money.from_minor(r.spent_so_far_minor, r.currency):>12} {r.currency}")
         typer.echo(f"  committed remaining  {money.from_minor(r.committed_remaining_minor, r.currency):>12} {r.currency}")
+        if r.need_to_save_minor > 0:
+            typer.echo(f"  need to save         {money.from_minor(r.need_to_save_minor, r.currency):>12} {r.currency}")
+        if r.like_to_save_minor > 0:
+            typer.echo(f"  like to save         {money.from_minor(r.like_to_save_minor, r.currency):>12} {r.currency}")
         typer.echo(f"  safe to spend        {money.from_minor(r.safe_to_spend_minor, r.currency):>12} {r.currency}")
+        if r.savings_shortfall_minor > 0:
+            typer.echo(
+                f"  plan short by        {money.from_minor(r.savings_shortfall_minor, r.currency):>12} "
+                f"{r.currency}  (lowest-priority goals cut)"
+            )
+            for gf in r.goal_funding:
+                if gf.status != "funded":
+                    typer.echo(
+                        f"    {gf.name}: {gf.status} "
+                        f"({money.from_minor(gf.allocated_minor, r.currency)}/"
+                        f"{money.from_minor(gf.ask_minor, r.currency)} {r.currency})"
+                    )
 
 
 @budget_app.command("status")
@@ -833,10 +850,12 @@ def goals_status_cmd() -> None:
         typer.echo("No goals configured.")
         return
     for g in rows:
+        mode_label = "fixed" if g.funding_mode == "fixed_monthly" else "target"
         typer.echo(
             f"  {g.name:20} {money.from_minor(g.funded_minor, g.currency):>12} / "
             f"{money.from_minor(g.target_minor, g.currency):>12} {g.currency}  "
             f"({g.pct_complete:.0f}%, {g.pace})"
+            f" [{mode_label} · asks {money.from_minor(g.monthly_ask_minor, g.currency)}/mo · p{g.priority}]"
         )
 
 
