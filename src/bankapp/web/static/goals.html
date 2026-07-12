@@ -323,7 +323,9 @@
           // A hidden leftover value in the monthly field must not sneak into a
           // target_date save and trip the server's "must not be set" 400.
           monthly: fundingMode === "fixed_monthly" ? (monthly.value || null) : null,
-          priority: Number(priority.value),
+          // Number("") is 0 — a cleared field must fall back to the default (100),
+          // not silently jump the queue as top priority.
+          priority: priority.value === "" ? 100 : Number(priority.value),
         };
         save.disabled = true;
         try {
