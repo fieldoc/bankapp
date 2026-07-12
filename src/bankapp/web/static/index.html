@@ -234,12 +234,45 @@
         for (const p of projection) {
           const card = document.createElement("div");
           card.className = "panel card";
+          let wf =
+            `<div class="wf-row"><span class="wf-name">expected income</span>` +
+            `<span class="wf-amt">${App.fmtMoney(p.expected_income_minor, p.currency)}</span></div>` +
+            `<div class="wf-row"><span class="wf-name">spent so far</span>` +
+            `<span class="wf-amt">−${App.fmtMoney(p.spent_so_far_minor, p.currency)}</span></div>` +
+            `<div class="wf-row"><span class="wf-name">bills &amp; subs left</span>` +
+            `<span class="wf-amt">−${App.fmtMoney(p.committed_remaining_minor, p.currency)}</span></div>`;
+          if (p.need_to_save_minor !== 0) {
+            wf +=
+              `<div class="wf-row"><span class="wf-name">need to save</span>` +
+              `<span class="wf-amt">−${App.fmtMoney(p.need_to_save_minor, p.currency)}</span></div>`;
+          }
+          if (p.like_to_save_minor !== 0) {
+            wf +=
+              `<div class="wf-row"><span class="wf-name">like to save</span>` +
+              `<span class="wf-amt">−${App.fmtMoney(p.like_to_save_minor, p.currency)}</span></div>`;
+          }
+          let shortfall = "";
+          if (p.savings_shortfall_minor > 0) {
+            shortfall =
+              `<div class="badge over">plan short by ${App.fmtMoney(p.savings_shortfall_minor, p.currency)}</div>`;
+            const goalFunding = p.goal_funding || [];
+            const chips = goalFunding
+              .filter((g) => g.status !== "funded")
+              .map((g) => {
+                const cls = g.status === "starved" ? "over" : "pace";
+                return `<span class="badge ${cls}">${App.esc(g.name)} · ${App.esc(g.status)}</span>`;
+              })
+              .join("");
+            if (chips) {
+              shortfall += `<div class="chipset">${chips}</div>`;
+            }
+          }
           card.innerHTML =
             `<div class="label">${App.esc(p.currency)} · ${App.esc(p.month)}</div>` +
             `<div class="value">${App.fmtMoney(p.safe_to_spend_minor, p.currency)}</div>` +
-            `<div class="sub">${App.fmtMoney(p.expected_income_minor, p.currency)} &minus; ` +
-            `${App.fmtMoney(p.spent_so_far_minor, p.currency)} &minus; ` +
-            `${App.fmtMoney(p.committed_remaining_minor, p.currency)}</div>`;
+            `<div class="sub">left to spend guilt-free</div>` +
+            `<div class="wf">${wf}</div>` +
+            shortfall;
           stsWrap.appendChild(card);
         }
       } catch (e) {

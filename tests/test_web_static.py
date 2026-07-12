@@ -116,3 +116,19 @@ def test_goals_page_has_crud_ui(app_env):
     assert "goal-edit" in html          # per-row edit hook
     assert "goal-archive" in html       # per-row archive hook
     assert "include_archived" in html   # archived disclosure
+
+
+def test_index_has_safe_to_spend_waterfall(app_env):
+    """The Overview page's safe-to-spend card must render the fun-money waterfall
+    (income → spent → committed → need-to-save → like-to-save) and the goal-funding
+    shortfall chips — consumer-reference guards against a silent digest field rename."""
+    client = _client(app_env)
+    html = client.get("/").text
+    assert "wf-row" in html          # waterfall row hook
+    assert "need to save" in html    # fixed-monthly savings tier label
+    assert "like to save" in html    # target-date savings tier label
+    assert "plan short by" in html   # shortfall badge copy
+    assert "goal_funding" in html    # per-goal funding status consumed from digest
+
+    css = client.get("/app.css").text
+    assert ".wf-row" in css

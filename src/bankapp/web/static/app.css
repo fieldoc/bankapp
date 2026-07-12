@@ -111,6 +111,16 @@ section.block > h2 {
 }
 .card .delta { font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .card .sub { color: var(--faint); font-size: 11.5px; font-family: var(--mono); margin-top: 4px; }
+.card .badge { margin-top: 8px; }
+
+/* ---------- safe-to-spend waterfall ---------- */
+.wf {
+  margin-top: 6px; font-size: .85em; font-family: var(--mono);
+  display: grid; gap: 2px;
+}
+.wf-row { display: flex; justify-content: space-between; gap: 12px; }
+.wf-name { color: var(--muted); }
+.wf-amt { font-variant-numeric: tabular-nums; }
 
 .pos { color: var(--pos); }
 .neg { color: var(--neg); }
