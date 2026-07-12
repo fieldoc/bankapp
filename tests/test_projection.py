@@ -3,11 +3,13 @@ minus spent-so-far minus committed-remaining (unpaid split my-shares + subscript
 predicted to charge later this month), floored at 0.
 """
 
+import calendar
 from datetime import date
 
 from typer.testing import CliRunner
 
 from bankapp import db as dbmod
+from bankapp import goals as goalsmod
 from bankapp.cli import app
 from bankapp.config import TemplateConfig
 from bankapp.match import splits
@@ -150,6 +152,210 @@ def test_committed_counts_every_remaining_weekly_charge(conn):
     rows = projection.month_projection(conn, today=date(2026, 4, 2))
     row = next(r for r in rows if r.currency == "CAD")
     assert row.committed_remaining_minor == 4000
+
+
+# ---- B: four-bucket savings waterfall ----------------------------------------
+
+def _fixed_goal(conn, name, monthly_minor, priority=100, currency="CAD", start_date="2026-01-01"):
+    """A fixed_monthly goal whose ask is exactly monthly_minor (target_minor=0 is
+    a legal perpetual bucket; allocation_pct=0 keeps funded_minor irrelevant to
+    the ask, which for fixed_monthly is a flat pass-through of monthly_minor)."""
+    return goalsmod.create(
+        conn, name=name, target_minor=0, currency=currency, start_date=start_date,
+        target_date=None, allocation_pct=0, funding_mode="fixed_monthly",
+        monthly_minor=monthly_minor, priority=priority,
+    )
+
+
+def _target_goal(conn, name, ask_minor, today, priority=100, currency="CAD", start_date="2026-01-01"):
+    """A target_date goal whose ask is exactly ask_minor: allocation_pct=0 keeps
+    funded_minor at 0 regardless of ledger activity, and a target_date inside
+    `today`'s month makes months_left == 1, so the whole remainder (target_minor)
+    is asked for right now."""
+    month_end = date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
+    return goalsmod.create(
+        conn, name=name, target_minor=ask_minor, currency=currency, start_date=start_date,
+        target_date=month_end.isoformat(), allocation_pct=0, funding_mode="target_date",
+        priority=priority,
+    )
+
+
+def _assert_safe_to_spend_invariant(row):
+    expected = max(0, row.expected_income_minor - row.spent_so_far_minor
+                    - row.committed_remaining_minor - row.savings_allocated_minor)
+    assert row.safe_to_spend_minor == expected
+    assert row.safe_to_spend_minor >= 0
+
+
+# B1: tier order -- fixed_monthly funds before target_date regardless of priority.
+def test_fixed_tier_funds_before_target_tier_regardless_of_priority(conn):
+    a = insert_account(conn)
+    _txn(conn, a, "2026-04-01", 40000, "payroll", "d-in")
+    conn.commit()
+    today = date(2026, 4, 5)
+    # Fixed goal has a much HIGHER (later-funding) priority number than the target
+    # goal, yet must still be funded first because its tier funds first.
+    _fixed_goal(conn, "z-fixed", 40000, priority=900)
+    _target_goal(conn, "a-target", 40000, today, priority=1)
+    conn.commit()
+
+    rows = projection.month_projection(conn, today=today)
+    row = next(r for r in rows if r.currency == "CAD")
+    by_name = {gf.name: gf for gf in row.goal_funding}
+    assert by_name["z-fixed"].status == "funded"
+    assert by_name["z-fixed"].allocated_minor == 40000
+    assert by_name["a-target"].status == "starved"
+    assert by_name["a-target"].allocated_minor == 0
+    _assert_safe_to_spend_invariant(row)
+
+
+def test_within_tier_orders_by_priority_then_name(conn):
+    a = insert_account(conn)
+    _txn(conn, a, "2026-04-01", 25000, "payroll", "d-in")
+    conn.commit()
+    today = date(2026, 4, 5)
+    _fixed_goal(conn, "a-p10", 10000, priority=10)
+    _fixed_goal(conn, "c-p20", 10000, priority=20)
+    _fixed_goal(conn, "b-p20", 10000, priority=20)
+    conn.commit()
+
+    rows = projection.month_projection(conn, today=today)
+    row = next(r for r in rows if r.currency == "CAD")
+    assert [gf.name for gf in row.goal_funding] == ["a-p10", "b-p20", "c-p20"]
+    _assert_safe_to_spend_invariant(row)
+
+
+# B2: partial + starved statuses, exact amounts.
+def test_partial_and_starved_goals(conn):
+    a = insert_account(conn)
+    _txn(conn, a, "2026-04-01", 15000, "payroll", "d-in")
+    conn.commit()
+    today = date(2026, 4, 5)
+    _fixed_goal(conn, "goal-a", 10000, priority=10)
+    _fixed_goal(conn, "goal-b", 10000, priority=20)
+    _fixed_goal(conn, "goal-c", 10000, priority=30)
+    conn.commit()
+
+    rows = projection.month_projection(conn, today=today)
+    row = next(r for r in rows if r.currency == "CAD")
+    by_name = {gf.name: gf for gf in row.goal_funding}
+    assert by_name["goal-a"].status == "funded"
+    assert by_name["goal-a"].allocated_minor == 10000
+    assert by_name["goal-b"].status == "partial"
+    assert by_name["goal-b"].allocated_minor == 5000
+    assert by_name["goal-c"].status == "starved"
+    assert by_name["goal-c"].allocated_minor == 0
+    assert row.safe_to_spend_minor == 0
+    assert row.savings_shortfall_minor == 30000 - 15000
+    _assert_safe_to_spend_invariant(row)
+
+
+# B3: fully funded -- pool exceeds the total ask.
+def test_all_goals_fully_funded_when_pool_exceeds_asks(conn):
+    a = insert_account(conn)
+    _txn(conn, a, "2026-04-01", 100000, "payroll", "d-in")
+    conn.commit()
+    today = date(2026, 4, 5)
+    _fixed_goal(conn, "goal-a", 10000, priority=10)
+    _target_goal(conn, "goal-b", 20000, today, priority=10)
+    conn.commit()
+
+    rows = projection.month_projection(conn, today=today)
+    row = next(r for r in rows if r.currency == "CAD")
+    assert all(gf.status == "funded" for gf in row.goal_funding)
+    assert row.need_to_save_minor == 10000
+    assert row.like_to_save_minor == 20000
+    assert row.savings_allocated_minor == 30000
+    assert row.safe_to_spend_minor == 100000 - 30000
+    assert row.savings_shortfall_minor == 0
+    _assert_safe_to_spend_invariant(row)
+
+
+# B4: negative available -- every asking goal starves, safe floors at 0.
+def test_negative_available_starves_every_goal(conn):
+    a = insert_account(conn)
+    _txn(conn, a, "2026-04-01", 10000, "payroll", "d-in")
+    _txn(conn, a, "2026-04-02", -50000, "big spend", "d-out")
+    conn.commit()
+    today = date(2026, 4, 5)
+    _fixed_goal(conn, "goal-a", 5000, priority=10)
+    _target_goal(conn, "goal-b", 3000, today, priority=10)
+    conn.commit()
+
+    rows = projection.month_projection(conn, today=today)
+    row = next(r for r in rows if r.currency == "CAD")
+    assert (row.expected_income_minor - row.spent_so_far_minor
+            - row.committed_remaining_minor) < 0
+    assert all(gf.status == "starved" for gf in row.goal_funding)
+    assert all(gf.allocated_minor == 0 for gf in row.goal_funding)
+    assert row.safe_to_spend_minor == 0
+    assert row.savings_shortfall_minor == 5000 + 3000
+    _assert_safe_to_spend_invariant(row)
+
+
+# B5: invariant holds across every scenario above (each also asserted inline).
+def test_safe_to_spend_invariant_across_scenarios(conn):
+    a = insert_account(conn)
+    _txn(conn, a, "2026-04-01", 15000, "payroll", "d-in")
+    conn.commit()
+    today = date(2026, 4, 5)
+    _fixed_goal(conn, "goal-a", 10000, priority=10)
+    _fixed_goal(conn, "goal-b", 10000, priority=20)
+    _fixed_goal(conn, "goal-c", 10000, priority=30)
+    conn.commit()
+
+    rows = projection.month_projection(conn, today=today)
+    for row in rows:
+        _assert_safe_to_spend_invariant(row)
+
+
+# B6: a goal with no target_date asks 0 and is excluded from goal_funding.
+def test_zero_ask_goal_excluded_from_goal_funding(conn):
+    a = insert_account(conn)
+    _txn(conn, a, "2026-04-01", 50000, "payroll", "d-in")
+    conn.commit()
+    today = date(2026, 4, 5)
+    goalsmod.create(
+        conn, name="no-target", target_minor=100000, currency="CAD",
+        start_date="2026-01-01", target_date=None, allocation_pct=100,
+        funding_mode="target_date",
+    )
+    conn.commit()
+
+    rows = projection.month_projection(conn, today=today)
+    row = next(r for r in rows if r.currency == "CAD")
+    assert row.goal_funding == []
+    assert row.need_to_save_minor == 0
+    assert row.like_to_save_minor == 0
+    assert row.savings_allocated_minor == 0
+    assert row.savings_shortfall_minor == 0
+    assert row.safe_to_spend_minor == 50000
+
+
+# B7: a goal's currency never draws another currency's pool; a goal-only currency
+# with no cashflow activity still yields a ProjectionRow.
+def test_goal_currency_isolated_and_goal_only_currency_yields_row(conn):
+    a = insert_account(conn)
+    _txn(conn, a, "2026-04-01", 50000, "payroll", "d-in")  # CAD income only
+    conn.commit()
+    today = date(2026, 4, 5)
+    _fixed_goal(conn, "cad-goal", 10000, priority=10, currency="CAD")
+    _fixed_goal(conn, "usd-goal", 999999, priority=10, currency="USD")
+    conn.commit()
+
+    rows = projection.month_projection(conn, today=today)
+    by_cur = {r.currency: r for r in rows}
+    assert "USD" in by_cur  # goal-only currency still surfaces a row
+
+    cad_row = by_cur["CAD"]
+    assert {gf.name for gf in cad_row.goal_funding} == {"cad-goal"}
+    assert cad_row.goal_funding[0].status == "funded"
+    assert cad_row.safe_to_spend_minor == 50000 - 10000
+
+    usd_row = by_cur["USD"]
+    assert {gf.name for gf in usd_row.goal_funding} == {"usd-goal"}
+    assert usd_row.expected_income_minor == 0
+    assert usd_row.goal_funding[0].status == "starved"
 
 
 # ---- CLI smoke test ----------------------------------------------------------

@@ -553,6 +553,10 @@ class GoalStatus:
     target_date: Optional[str]
     note: Optional[str]
     active: bool
+    funding_mode: str
+    priority: int
+    monthly_minor: Optional[int]
+    monthly_ask_minor: int
 
 
 def _net_since(conn: sqlite3.Connection, start_date: str, currency: str) -> int:
@@ -568,9 +572,11 @@ def goals_status(
     today: Optional[date] = None,
     include_archived: bool = False,
 ) -> list[GoalStatus]:
+    from bankapp import goals as goalsmod
+
     today = today or date.today()
     sql = """SELECT id, name, target_minor, currency, start_date, target_date,
-                    allocation_pct, note, active
+                    allocation_pct, note, active, funding_mode, monthly_minor, priority
              FROM goals"""
     if not include_archived:
         sql += " WHERE active = 1"
@@ -588,11 +594,18 @@ def goals_status(
             elapsed = min(max((today - start).days, 0), total_days)
             expected = g["target_minor"] * elapsed / total_days
             pace = "on_track" if funded >= expected else "behind"
+        ask = goalsmod.monthly_ask(
+            funding_mode=g["funding_mode"], monthly_minor=g["monthly_minor"],
+            target_minor=g["target_minor"], funded_minor=funded,
+            target_date=g["target_date"], today=today,
+        )
         out.append(GoalStatus(
             id=g["id"], name=g["name"], target_minor=g["target_minor"], funded_minor=funded,
             currency=g["currency"], allocation_pct=g["allocation_pct"], pct_complete=pct,
             pace=pace, start_date=g["start_date"], target_date=g["target_date"],
             note=g["note"], active=bool(g["active"]),
+            funding_mode=g["funding_mode"], priority=g["priority"],
+            monthly_minor=g["monthly_minor"], monthly_ask_minor=ask,
         ))
     return out
 
@@ -736,7 +749,9 @@ def digest(conn: sqlite3.Connection, cfg, today: Optional[date] = None) -> dict:
         "goals": [
             {"name": g.name, "target_minor": g.target_minor, "funded_minor": g.funded_minor,
              "currency": g.currency, "allocation_pct": g.allocation_pct,
-             "pct_complete": round(g.pct_complete, 2), "pace": g.pace}
+             "pct_complete": round(g.pct_complete, 2), "pace": g.pace,
+             "funding_mode": g.funding_mode, "priority": g.priority,
+             "monthly_ask_minor": g.monthly_ask_minor}
             for g in goals_status(conn, today)
         ],
         "projection": [dataclasses.asdict(r) for r in projection.month_projection(conn, today)],

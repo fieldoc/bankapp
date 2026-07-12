@@ -123,3 +123,80 @@ def test_digest_markdown_renders(seeded):
     assert "# Finance digest" in md
     assert "Net worth" in md
     assert "netflix.com" in md  # detected subscription
+
+
+# ---- Slice 2: four-bucket savings waterfall wire contract --------------------
+
+def test_goals_status_carries_fixed_monthly_ask(conn):
+    goalsmod.create(
+        conn, name="emergency", target_minor=0, currency="CAD",
+        start_date="2026-01-01", target_date=None, allocation_pct=0,
+        funding_mode="fixed_monthly", monthly_minor=50000, priority=50,
+    )
+    g = advisor.goals_status(conn, today=date(2026, 6, 1))[0]
+    assert g.funding_mode == "fixed_monthly"
+    assert g.priority == 50
+    assert g.monthly_minor == 50000
+    assert g.monthly_ask_minor == 50000
+
+
+def test_goals_status_target_date_ask_matches_goals_monthly_ask(conn):
+    a = insert_account(conn, key="td-chequing")
+    _income(conn, a, 100000, dedup="i1")
+    goalsmod.seed_from_config(
+        conn, [_goal(target=300000, start="2026-01-01", target_date="2026-12-31", alloc=100)]
+    )
+    today = date(2026, 6, 1)
+    g = advisor.goals_status(conn, today=today)[0]
+    expected = goalsmod.monthly_ask(
+        funding_mode=g.funding_mode, monthly_minor=g.monthly_minor,
+        target_minor=g.target_minor, funded_minor=g.funded_minor,
+        target_date=g.target_date, today=today,
+    )
+    assert expected > 0  # sanity: not trivially 0
+    assert g.monthly_ask_minor == expected
+
+
+def test_digest_goals_entry_has_funding_fields(seeded):
+    # `seeded` only runs sync_accounts, not `finance init` -- goals must be
+    # seeded explicitly here from the fixture's own config.goals.
+    cfg, conn = seeded
+    goalsmod.seed_from_config(conn, cfg.goals)
+    d = advisor.digest(conn, cfg, today=date(2026, 3, 15))
+    assert d["goals"], "expected at least one seeded goal"
+    for g in d["goals"]:
+        assert "funding_mode" in g
+        assert "priority" in g
+        assert "monthly_ask_minor" in g
+
+
+def test_digest_projection_entry_has_waterfall_fields_and_top_level_keys_unchanged(seeded):
+    cfg, conn = seeded
+    goalsmod.seed_from_config(conn, cfg.goals)
+    d = advisor.digest(conn, cfg, today=date(2026, 3, 15))
+    assert d["projection"], "expected at least one projection row"
+    goal_funding_keys = {
+        "goal_id", "name", "funding_mode", "priority", "ask_minor", "allocated_minor", "status",
+    }
+    saw_goal_funding = False
+    for row in d["projection"]:
+        assert "need_to_save_minor" in row
+        assert "like_to_save_minor" in row
+        assert "savings_allocated_minor" in row
+        assert "savings_shortfall_minor" in row
+        assert isinstance(row["goal_funding"], list)
+        for gf in row["goal_funding"]:
+            assert set(gf.keys()) == goal_funding_keys
+            saw_goal_funding = True
+    assert saw_goal_funding, "expected the seeded example-trip goal to surface in goal_funding"
+
+    # Adding the new goals/projection fields must not add a new top-level digest
+    # key -- test_digest_json_keys_stable is a set-equality assertion and must
+    # keep passing unmodified.
+    expected_keys = {
+        "as_of", "month", "net_worth", "net_worth_split", "net_worth_delta_minor",
+        "net_worth_consolidated", "savings", "budgets", "subscriptions", "top_leaks",
+        "receivables", "goals", "projection", "anomalies", "uncategorized_count",
+        "pending_transfer_legs", "data_quality", "changes_since_brief",
+    }
+    assert set(d.keys()) == expected_keys
