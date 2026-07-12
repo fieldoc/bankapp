@@ -119,3 +119,26 @@ def test_txn_interp_source_column_backfilled_on_legacy_db():
     assert "source" in cols
     assert conn.execute("SELECT source FROM txn_interp WHERE raw_txn_id = ?", (tid,)).fetchone()[0] == "rule"
     dbmod.apply_schema(conn)
+
+
+def test_goal_funding_columns_backfilled_on_legacy_db():
+    # A pre-funding-mode DB: drop the three safe-to-spend columns and confirm
+    # apply_schema re-adds them with their documented defaults.
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    dbmod.apply_schema(conn)
+    conn.execute(
+        "INSERT INTO goals(name, target_minor, currency, start_date, target_date, "
+        "allocation_pct, note, active) VALUES ('x', 100, 'CAD', '2026-01-01', NULL, 100, NULL, 1)"
+    )
+    conn.execute("ALTER TABLE goals DROP COLUMN funding_mode")
+    conn.execute("ALTER TABLE goals DROP COLUMN monthly_minor")
+    conn.execute("ALTER TABLE goals DROP COLUMN priority")
+    dbmod.apply_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+    assert {"funding_mode", "monthly_minor", "priority"} <= cols
+    row = conn.execute(
+        "SELECT funding_mode, monthly_minor, priority FROM goals WHERE name = 'x'"
+    ).fetchone()
+    assert (row["funding_mode"], row["monthly_minor"], row["priority"]) == ("target_date", None, 100)
+    dbmod.apply_schema(conn)

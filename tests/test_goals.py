@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from bankapp import goals
@@ -71,6 +73,87 @@ def test_check_fields_allows_absent_target_date():
                        start_date="2026-01-01", target_date=None, allocation_pct=0)
 
 
+# ---- funding_mode / monthly_minor / priority validation ---------------------
+
+def test_check_fields_rejects_bad_funding_mode():
+    with pytest.raises(goals.ValidationError):
+        goals.check_fields(name="trip", target_minor=1, currency="CAD",
+                           start_date="2026-01-01", target_date=None, allocation_pct=100,
+                           funding_mode="weekly")
+
+
+def test_check_fields_fixed_monthly_requires_monthly_minor_positive():
+    with pytest.raises(goals.ValidationError):
+        goals.check_fields(name="emergency", target_minor=0, currency="CAD",
+                           start_date="2026-01-01", target_date=None, allocation_pct=100,
+                           funding_mode="fixed_monthly", monthly_minor=0)
+
+
+def test_check_fields_fixed_monthly_rejects_missing_monthly_minor():
+    with pytest.raises(goals.ValidationError):
+        goals.check_fields(name="emergency", target_minor=0, currency="CAD",
+                           start_date="2026-01-01", target_date=None, allocation_pct=100,
+                           funding_mode="fixed_monthly", monthly_minor=None)
+
+
+def test_check_fields_fixed_monthly_rejects_bool_monthly_minor():
+    with pytest.raises(goals.ValidationError):
+        goals.check_fields(name="emergency", target_minor=0, currency="CAD",
+                           start_date="2026-01-01", target_date=None, allocation_pct=100,
+                           funding_mode="fixed_monthly", monthly_minor=True)
+
+
+def test_check_fields_fixed_monthly_allows_target_zero():
+    # 0 = perpetual bucket, no progress %.
+    goals.check_fields(name="emergency", target_minor=0, currency="CAD",
+                       start_date="2026-01-01", target_date=None, allocation_pct=100,
+                       funding_mode="fixed_monthly", monthly_minor=50000)
+
+
+def test_check_fields_fixed_monthly_rejects_negative_target():
+    with pytest.raises(goals.ValidationError):
+        goals.check_fields(name="emergency", target_minor=-1, currency="CAD",
+                           start_date="2026-01-01", target_date=None, allocation_pct=100,
+                           funding_mode="fixed_monthly", monthly_minor=50000)
+
+
+def test_check_fields_target_date_mode_rejects_monthly_minor_set():
+    with pytest.raises(goals.ValidationError):
+        goals.check_fields(name="trip", target_minor=300000, currency="CAD",
+                           start_date="2026-01-01", target_date="2026-12-31",
+                           allocation_pct=100, funding_mode="target_date",
+                           monthly_minor=50000)
+
+
+def test_check_fields_target_date_mode_still_rejects_target_zero():
+    with pytest.raises(goals.ValidationError):
+        goals.check_fields(name="trip", target_minor=0, currency="CAD",
+                           start_date="2026-01-01", target_date=None, allocation_pct=100,
+                           funding_mode="target_date")
+
+
+@pytest.mark.parametrize("priority", [-1, 1000])
+def test_check_fields_rejects_priority_out_of_range(priority):
+    with pytest.raises(goals.ValidationError):
+        goals.check_fields(name="trip", target_minor=1, currency="CAD",
+                           start_date="2026-01-01", target_date=None, allocation_pct=100,
+                           priority=priority)
+
+
+def test_check_fields_rejects_bool_priority():
+    with pytest.raises(goals.ValidationError):
+        goals.check_fields(name="trip", target_minor=1, currency="CAD",
+                           start_date="2026-01-01", target_date=None, allocation_pct=100,
+                           priority=True)
+
+
+@pytest.mark.parametrize("priority", [0, 999])
+def test_check_fields_allows_priority_boundaries(priority):
+    goals.check_fields(name="trip", target_minor=1, currency="CAD",
+                       start_date="2026-01-01", target_date=None, allocation_pct=100,
+                       priority=priority)
+
+
 # ---- allocation headroom + name uniqueness ---------------------------------
 
 def test_headroom_is_100_on_empty_db(conn):
@@ -125,6 +208,37 @@ def test_create_then_get_round_trip(conn):
     assert (g.name, g.target_minor, g.currency, g.allocation_pct) == ("trip", 300000, "CAD", 100)
     assert g.active is True
     assert g.note == "hello"
+
+
+def test_create_defaults_funding_mode_and_priority(conn):
+    gid = _mk(conn)
+    g = goals.get(conn, gid)
+    assert g.funding_mode == "target_date"
+    assert g.monthly_minor is None
+    assert g.priority == 100
+
+
+def test_create_fixed_monthly_goal_round_trip(conn):
+    gid = goals.create(conn, name="emergency-fund", target_minor=0, currency="CAD",
+                       start_date="2026-07-01", funding_mode="fixed_monthly",
+                       monthly_minor=50000, priority=10)
+    g = goals.get(conn, gid)
+    assert g.funding_mode == "fixed_monthly"
+    assert g.monthly_minor == 50000
+    assert g.priority == 10
+    assert g.target_minor == 0
+
+
+def test_update_threads_funding_fields(conn):
+    gid = _mk(conn)
+    goals.update(conn, gid, name="trip", target_minor=300000, currency="CAD",
+                start_date="2026-01-01", target_date="2026-12-31",
+                allocation_pct=100, note=None, funding_mode="fixed_monthly",
+                monthly_minor=25000, priority=5)
+    g = goals.get(conn, gid)
+    assert g.funding_mode == "fixed_monthly"
+    assert g.monthly_minor == 25000
+    assert g.priority == 5
 
 
 def test_create_strips_name(conn):
@@ -321,3 +435,88 @@ def test_seed_ledger_rolls_back_with_the_inserts(conn):
         goals.seed_from_config(conn, [_cfg("a", 60), _cfg("b", 60)])
     # ledger must not remember 'a'/'b', or a corrected config could never seed them
     assert goals.seed_from_config(conn, [_cfg("a", 50), _cfg("b", 50)]) == 2
+
+
+def test_seed_from_config_threads_fixed_monthly_goal(conn):
+    fixed_cfg = GoalConfig(
+        name="emergency-fund", target_minor=0, currency="CAD",
+        start_date="2026-07-01", target_date=None, allocation_pct=100, note=None,
+        funding_mode="fixed_monthly", monthly_minor=50000, priority=10,
+    )
+    assert goals.seed_from_config(conn, [fixed_cfg]) == 1
+    g = goals.list_goals(conn)[0]
+    assert g.funding_mode == "fixed_monthly"
+    assert g.monthly_minor == 50000
+    assert g.priority == 10
+    assert g.target_minor == 0
+
+
+# ---- monthly_ask --------------------------------------------------------------
+
+def test_monthly_ask_fixed_monthly_passthrough():
+    assert goals.monthly_ask(
+        funding_mode="fixed_monthly", monthly_minor=50000, target_minor=999999,
+        funded_minor=0, target_date=None, today=date(2026, 7, 12),
+    ) == 50000
+
+
+def test_monthly_ask_fixed_monthly_none_defaults_to_zero():
+    assert goals.monthly_ask(
+        funding_mode="fixed_monthly", monthly_minor=None, target_minor=0,
+        funded_minor=0, target_date=None, today=date(2026, 7, 12),
+    ) == 0
+
+
+def test_monthly_ask_target_mode_no_target_date_is_zero():
+    assert goals.monthly_ask(
+        funding_mode="target_date", monthly_minor=None, target_minor=100000,
+        funded_minor=0, target_date=None, today=date(2026, 7, 12),
+    ) == 0
+
+
+def test_monthly_ask_target_mode_zero_target_is_zero():
+    assert goals.monthly_ask(
+        funding_mode="target_date", monthly_minor=None, target_minor=0,
+        funded_minor=0, target_date="2026-12-01", today=date(2026, 7, 12),
+    ) == 0
+
+
+def test_monthly_ask_funded_at_or_past_target_is_zero():
+    assert goals.monthly_ask(
+        funding_mode="target_date", monthly_minor=None, target_minor=100000,
+        funded_minor=100000, target_date="2026-12-01", today=date(2026, 7, 12),
+    ) == 0
+    assert goals.monthly_ask(
+        funding_mode="target_date", monthly_minor=None, target_minor=100000,
+        funded_minor=150000, target_date="2026-12-01", today=date(2026, 7, 12),
+    ) == 0
+
+
+def test_monthly_ask_months_left_counts_current_month():
+    # today 2026-07-12, target 2026-12-01 -> months_left = 6 (Jul..Dec inclusive).
+    assert goals.monthly_ask(
+        funding_mode="target_date", monthly_minor=None, target_minor=100000,
+        funded_minor=40000, target_date="2026-12-01", today=date(2026, 7, 12),
+    ) == 10000  # ceil(60000 / 6)
+
+
+def test_monthly_ask_target_this_month_is_whole_remaining():
+    assert goals.monthly_ask(
+        funding_mode="target_date", monthly_minor=None, target_minor=50000,
+        funded_minor=20000, target_date="2026-07-20", today=date(2026, 7, 12),
+    ) == 30000  # months_left clamps to 1 -> whole remaining
+
+
+def test_monthly_ask_past_target_clamps_to_whole_remaining():
+    assert goals.monthly_ask(
+        funding_mode="target_date", monthly_minor=None, target_minor=50000,
+        funded_minor=10000, target_date="2026-01-01", today=date(2026, 7, 12),
+    ) == 40000  # months_left would be negative -> clamped to 1
+
+
+def test_monthly_ask_uses_ceil_division():
+    # remaining=100, months_left=3 -> ceil(100/3) = 34, not 33.
+    assert goals.monthly_ask(
+        funding_mode="target_date", monthly_minor=None, target_minor=100100,
+        funded_minor=100000, target_date="2026-09-01", today=date(2026, 7, 12),
+    ) == 34

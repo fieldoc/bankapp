@@ -54,13 +54,20 @@ class Goal:
     allocation_pct: int
     note: Optional[str]
     active: bool
+    funding_mode: str
+    monthly_minor: Optional[int]
+    priority: int
 
 
-_COLS = "id, name, target_minor, currency, start_date, target_date, allocation_pct, note, active"
+_COLS = (
+    "id, name, target_minor, currency, start_date, target_date, allocation_pct, note, active, "
+    "funding_mode, monthly_minor, priority"
+)
 
 _INSERT = (
     "INSERT INTO goals(name, target_minor, currency, start_date, target_date, "
-    "allocation_pct, note, active) VALUES (?,?,?,?,?,?,?,1)"
+    "allocation_pct, note, active, funding_mode, monthly_minor, priority) "
+    "VALUES (?,?,?,?,?,?,?,1,?,?,?)"
 )
 
 
@@ -69,6 +76,7 @@ def _to_goal(r: sqlite3.Row) -> Goal:
         id=r["id"], name=r["name"], target_minor=r["target_minor"], currency=r["currency"],
         start_date=r["start_date"], target_date=r["target_date"],
         allocation_pct=r["allocation_pct"], note=r["note"], active=bool(r["active"]),
+        funding_mode=r["funding_mode"], monthly_minor=r["monthly_minor"], priority=r["priority"],
     )
 
 
@@ -102,15 +110,36 @@ def _is_int(value: object) -> bool:
 def check_fields(
     *, name: str, target_minor: int, currency: str,
     start_date: str, target_date: Optional[str], allocation_pct: int,
+    funding_mode: str = "target_date", monthly_minor: Optional[int] = None,
+    priority: int = 100,
 ) -> None:
-    """Validate everything needing no DB access. Raises ValidationError."""
+    """Validate everything needing no DB access. Raises ValidationError.
+
+    funding_mode picks how a goal's monthly ask is computed (see monthly_ask()):
+    'fixed_monthly' is a flat $/month bucket (target_minor may be 0 -- a
+    perpetual bucket with no progress %), 'target_date' auto-computes the ask
+    from target_minor + target_date (today's original, unchanged rule: the
+    target must be positive and this mode never carries a monthly_minor).
+    """
     if not (name or "").strip():
         raise ValidationError("name is required")
-    if not _is_int(target_minor) or target_minor <= 0:
-        raise ValidationError("target must be greater than zero")
     if currency not in money.known_currencies():
         known = ", ".join(money.known_currencies())
         raise ValidationError(f"unknown currency {currency!r}; known currencies are {known}")
+    if funding_mode not in ("fixed_monthly", "target_date"):
+        raise ValidationError(
+            f"funding_mode must be 'fixed_monthly' or 'target_date', got {funding_mode!r}"
+        )
+    if funding_mode == "fixed_monthly":
+        if not _is_int(monthly_minor) or monthly_minor <= 0:
+            raise ValidationError("monthly must be greater than zero for a fixed_monthly goal")
+        if not _is_int(target_minor) or target_minor < 0:
+            raise ValidationError("target must be zero or greater")
+    else:
+        if monthly_minor is not None:
+            raise ValidationError("monthly must not be set unless funding_mode is fixed_monthly")
+        if not _is_int(target_minor) or target_minor <= 0:
+            raise ValidationError("target must be greater than zero")
     start = _iso(start_date, "start_date")
     if target_date:
         # goals_status computes total_days = max(1, (target - start).days), so an
@@ -119,6 +148,8 @@ def check_fields(
             raise ValidationError("target_date cannot be before start_date")
     if not _is_int(allocation_pct) or not (0 <= allocation_pct <= 100):
         raise ValidationError("allocation_pct must be between 0 and 100")
+    if not _is_int(priority) or not (0 <= priority <= 999):
+        raise ValidationError("priority must be between 0 and 999")
 
 
 def check_name_free(
@@ -164,18 +195,22 @@ def create(
     conn: sqlite3.Connection, *, name: str, target_minor: int, currency: str,
     start_date: str, target_date: Optional[str] = None,
     allocation_pct: int = 100, note: Optional[str] = None,
+    funding_mode: str = "target_date", monthly_minor: Optional[int] = None,
+    priority: int = 100,
 ) -> int:
     """Insert an active goal. Returns its new id."""
     name = (name or "").strip()
     check_fields(name=name, target_minor=target_minor, currency=currency,
                  start_date=start_date, target_date=target_date,
-                 allocation_pct=allocation_pct)
+                 allocation_pct=allocation_pct, funding_mode=funding_mode,
+                 monthly_minor=monthly_minor, priority=priority)
     with conn:  # commits on success, rolls back if a check raises
         check_name_free(conn, name)
         check_allocation(conn, currency, allocation_pct)
         cur = conn.execute(
             _INSERT,
-            (name, target_minor, currency, start_date, target_date, allocation_pct, note),
+            (name, target_minor, currency, start_date, target_date, allocation_pct, note,
+             funding_mode, monthly_minor, priority),
         )
         return int(cur.lastrowid)
 
@@ -184,12 +219,15 @@ def update(
     conn: sqlite3.Connection, goal_id: int, *, name: str, target_minor: int, currency: str,
     start_date: str, target_date: Optional[str] = None,
     allocation_pct: int = 100, note: Optional[str] = None,
+    funding_mode: str = "target_date", monthly_minor: Optional[int] = None,
+    priority: int = 100,
 ) -> None:
     """Full replace of a goal's fields, including a rename. `active` is untouched."""
     name = (name or "").strip()
     check_fields(name=name, target_minor=target_minor, currency=currency,
                  start_date=start_date, target_date=target_date,
-                 allocation_pct=allocation_pct)
+                 allocation_pct=allocation_pct, funding_mode=funding_mode,
+                 monthly_minor=monthly_minor, priority=priority)
     with conn:
         if get(conn, goal_id) is None:
             raise NotFound(f"no goal with id {goal_id}")
@@ -197,9 +235,10 @@ def update(
         check_allocation(conn, currency, allocation_pct, exclude_id=goal_id)
         conn.execute(
             "UPDATE goals SET name=?, target_minor=?, currency=?, start_date=?, "
-            "target_date=?, allocation_pct=?, note=? WHERE id=?",
+            "target_date=?, allocation_pct=?, note=?, funding_mode=?, monthly_minor=?, "
+            "priority=? WHERE id=?",
             (name, target_minor, currency, start_date, target_date,
-             allocation_pct, note, goal_id),
+             allocation_pct, note, funding_mode, monthly_minor, priority, goal_id),
         )
 
 
@@ -253,14 +292,15 @@ def seed_from_config(conn: sqlite3.Connection, goals: Iterable) -> int:
         for g in pending:
             check_fields(name=g.name, target_minor=g.target_minor, currency=g.currency,
                          start_date=g.start_date, target_date=g.target_date,
-                         allocation_pct=g.allocation_pct)
+                         allocation_pct=g.allocation_pct, funding_mode=g.funding_mode,
+                         monthly_minor=g.monthly_minor, priority=g.priority)
             # rowcount is unreliable for ON CONFLICT DO NOTHING; total_changes is not.
             # A pre-ledger DB may already hold the row: adopt it rather than insert.
             before = conn.total_changes
             conn.execute(
                 _INSERT + " ON CONFLICT(name) DO NOTHING",
                 (g.name, g.target_minor, g.currency, g.start_date, g.target_date,
-                 g.allocation_pct, g.note),
+                 g.allocation_pct, g.note, g.funding_mode, g.monthly_minor, g.priority),
             )
             inserted += conn.total_changes - before
         if pending:
@@ -279,3 +319,36 @@ def seed_from_config(conn: sqlite3.Connection, goals: Iterable) -> int:
                     f"{currency} goal allocations total {100 - headroom}% > 100%"
                 )
     return inserted
+
+
+# ---- monthly ask --------------------------------------------------------------
+
+def monthly_ask(*, funding_mode: str, monthly_minor: Optional[int], target_minor: int,
+                funded_minor: int, target_date: Optional[str], today: date) -> int:
+    """How much this goal wants set aside this month, in minor units.
+
+    'fixed_monthly' is a flat pass-through of monthly_minor (0 if unset -- callers
+    are expected to have validated it via check_fields, but this stays defensive
+    since it's pure and has no DB to lean on).
+
+    'target_date' auto-computes the ask by spreading what's left evenly over the
+    months remaining, then rounding UP (ceil) so the goal is never short by a
+    fraction of a cent's worth of rounding at the very end -- consistently asking
+    a little more each month beats falling short right before the deadline.
+
+    months_left counts the CURRENT month as one whole month: a target date that
+    falls within this month yields months_left = 1, so the entire remainder is
+    asked for now rather than spread past the deadline. A target_date already in
+    the past clamps to the same months_left = 1, for the same reason -- there is
+    no time left to spread over, so ask for everything remaining right away.
+    """
+    if funding_mode == "fixed_monthly":
+        return monthly_minor or 0
+    if not target_date or target_minor <= 0:
+        return 0
+    remaining = max(0, target_minor - funded_minor)
+    if remaining == 0:
+        return 0
+    t = date.fromisoformat(target_date)
+    months_left = max(1, (t.year - today.year) * 12 + (t.month - today.month) + 1)
+    return -(-remaining // months_left)  # ceil division

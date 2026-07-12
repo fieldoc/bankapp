@@ -99,6 +99,45 @@ def test_transfers_section(monkeypatch):
     assert "tfr-to" in c.transfers.seed_patterns
 
 
+def test_goal_funding_mode_defaults_to_target_date(monkeypatch, tmp_path):
+    monkeypatch.delenv("FINANCE_DB", raising=False)
+    p = tmp_path / "config.toml"
+    p.write_text(
+        'timezone = "America/Vancouver"\n'
+        'db_path = "/tmp/x.db"\n'
+        '[[goals]]\n'
+        'name = "trip"\n'
+        'target = "300.00"\n'
+        'start_date = "2026-01-01"\n'
+    )
+    c = cfg.load_config(p)
+    g = c.goals[0]
+    assert g.funding_mode == "target_date"
+    assert g.monthly_minor is None
+    assert g.priority == 100
+
+
+def test_goal_fixed_monthly_parsed(monkeypatch, tmp_path):
+    monkeypatch.delenv("FINANCE_DB", raising=False)
+    p = tmp_path / "config.toml"
+    p.write_text(
+        'timezone = "America/Vancouver"\n'
+        'db_path = "/tmp/x.db"\n'
+        '[[goals]]\n'
+        'name = "emergency-fund"\n'
+        'target = "0.00"\n'
+        'start_date = "2026-07-01"\n'
+        'funding_mode = "fixed_monthly"\n'
+        'monthly = "500.00"\n'
+        'priority = 10\n'
+    )
+    c = cfg.load_config(p)
+    g = c.goals[0]
+    assert g.funding_mode == "fixed_monthly"
+    assert g.monthly_minor == 50000
+    assert g.priority == 10
+
+
 def test_missing_file_actionable_error(tmp_path):
     missing = tmp_path / "nope.toml"
     with pytest.raises(FileNotFoundError) as ei:

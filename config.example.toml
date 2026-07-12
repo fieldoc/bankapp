@@ -87,6 +87,14 @@ target_date    = "2027-02-01"
 allocation_pct = 100                   # share of THIS CURRENCY's net savings; active
                                        # goals in one currency must total <= 100%
 
+# [[goals]]                            # a "need to save" bucket: fixed amount every month
+# name         = "emergency-fund"
+# target       = "0.00"                # 0 = perpetual bucket (no progress %)
+# start_date   = "2026-07-01"
+# funding_mode = "fixed_monthly"
+# monthly      = "500.00"              # set aside this much each month, before fun money
+# priority     = 10                    # lower = funded first when money is tight
+
 [advisor]
 leak_threshold = "15.00"               # txns under this feed the leak report
 

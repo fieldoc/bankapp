@@ -42,6 +42,11 @@ _COLUMN_MIGRATIONS = [
     # Pure digest() snapshot a brief was based on (see report/advisor.py
     # _changes_since_brief). NULL for briefs written before this column existed.
     ("advisor_brief", "digest_json", "TEXT"),
+    # Safe-to-spend four-bucket model: funding_mode selects a flat monthly ask
+    # ('fixed_monthly') vs. one auto-computed from target + target_date ('target_date').
+    ("goals", "funding_mode", "TEXT NOT NULL DEFAULT 'target_date'"),
+    ("goals", "monthly_minor", "INTEGER"),                 # NULL unless fixed_monthly
+    ("goals", "priority", "INTEGER NOT NULL DEFAULT 100"), # lower funds first
 ]
 
 # Views are pure derivations over immutable data, so the cheapest way to keep their

@@ -164,6 +164,9 @@ CREATE TABLE IF NOT EXISTS goals (     -- upserted from config [[goals]] by name
   start_date TEXT NOT NULL,            -- progress = net savings since this date x allocation
   target_date TEXT,
   allocation_pct INTEGER NOT NULL DEFAULT 100,
+  funding_mode TEXT NOT NULL DEFAULT 'target_date', -- 'fixed_monthly' or 'target_date'
+  monthly_minor INTEGER,               -- NULL unless funding_mode = 'fixed_monthly'
+  priority INTEGER NOT NULL DEFAULT 100, -- lower funds first
   note TEXT,
   active INTEGER NOT NULL DEFAULT 1
 );

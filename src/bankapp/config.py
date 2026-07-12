@@ -54,6 +54,11 @@ class GoalConfig:
     target_date: Optional[str]
     allocation_pct: int
     note: Optional[str] = None
+    # Safe-to-spend four-bucket model: 'fixed_monthly' (flat $/month) or
+    # 'target_date' (monthly ask auto-computed from target + target_date).
+    funding_mode: str = "target_date"
+    monthly_minor: Optional[int] = None  # only meaningful when funding_mode is fixed_monthly
+    priority: int = 100                  # lower funds first
 
 
 @dataclass(frozen=True)
@@ -195,6 +200,12 @@ def load_config(path: Optional[Path] = None) -> Config:
             target_date=g.get("target_date"),
             allocation_pct=int(g.get("allocation_pct", 100)),
             note=g.get("note"),
+            funding_mode=g.get("funding_mode", "target_date"),
+            monthly_minor=(
+                money.to_minor(g["monthly"], g.get("currency", "CAD"))
+                if "monthly" in g else None
+            ),
+            priority=int(g.get("priority", 100)),
         )
         for g in data.get("goals", [])
     )
