@@ -118,6 +118,21 @@ def test_goals_page_has_crud_ui(app_env):
     assert "include_archived" in html   # archived disclosure
 
 
+def test_goals_page_has_funding_mode_ui(app_env):
+    """The Goals page must ship the funding-mode radios, priority field, and the
+    this-month funding chips sourced from /api/projection's goal_funding — a
+    consumer-reference guard against a silent field rename on either contract."""
+    client = _client(app_env)
+    html = client.get("/goals.html").text
+    assert "funding_mode" in html        # radio group name + save-body key
+    assert "fixed_monthly" in html       # radio value + row/toggle branching
+    assert "radios" in html              # shared .radios idiom from app.css
+    assert "priority" in html            # priority field + row badge
+    assert "monthly_ask_minor" in html   # GoalStatus field consumed for the ask badge
+    assert "goal_funding" in html        # per-goal funding rows consumed from /api/projection
+    assert "this month:" in html         # funding chip copy
+
+
 def test_index_has_safe_to_spend_waterfall(app_env):
     """The Overview page's safe-to-spend card must render the fun-money waterfall
     (income → spent → committed → need-to-save → like-to-save) and the goal-funding

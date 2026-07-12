@@ -48,29 +48,65 @@
       return b;
     }
 
-    function goalRow(g, archived) {
+    // `projMap` is goal_id -> {status, allocated_minor, ask_minor} built from
+    // /api/projection's per-currency goal_funding rows, or null/absent if that
+    // fetch failed. Only active (non-archived) goals get a this-month chip.
+    function goalRow(g, archived, projMap) {
       const pct = Math.max(0, Math.min(100, g.pct_complete || 0));
       const badge = paceBadge(g);
       const row = document.createElement("div");
       row.className = "bar-row";
 
+      const isFixed = g.funding_mode === "fixed_monthly";
+      // A fixed bucket with no target is a perpetual pot — a progress bar toward
+      // zero is meaningless, so it skips the bar and shows a running total instead.
+      const isPerpetual = isFixed && g.target_minor === 0;
+
+      let badges =
+        `<span class="badge ${badge.cls}">${badge.txt}</span> ` +
+        `<span class="badge role">${g.allocation_pct}% alloc</span>`;
+
+      if (isFixed) {
+        badges += ` <span class="badge role">${App.fmtMoney(g.monthly_minor, g.currency)}/mo · fixed</span>`;
+      } else if (g.monthly_ask_minor > 0) {
+        badges += ` <span class="badge role">asks ${App.fmtMoney(g.monthly_ask_minor, g.currency)}/mo</span>`;
+      }
+
+      if (g.priority !== 100) {
+        badges += ` <span class="badge role">p${g.priority}</span>`;
+      }
+
+      if (!archived && projMap && projMap.has(g.id)) {
+        const chipByStatus = {
+          funded: ["ok", "funded"],
+          partial: ["pace", "partial"],
+          starved: ["over", "starved"],
+        };
+        const chip = chipByStatus[projMap.get(g.id).status];
+        if (chip) badges += ` <span class="badge ${chip[0]}">this month: ${chip[1]}</span>`;
+      }
+
+      const amt = isPerpetual
+        ? `${App.fmtMoney(g.funded_minor, g.currency)} saved`
+        : `${App.fmtMoney(g.funded_minor, g.currency)} / ` +
+          `${App.fmtMoney(g.target_minor, g.currency)} · ${pct.toFixed(0)}%`;
+
       const head = document.createElement("div");
       head.className = "bar-head";
       head.innerHTML =
-        `<span class="cat">${App.esc(g.name)} ` +
-        `<span class="badge ${badge.cls}">${badge.txt}</span> ` +
-        `<span class="badge role">${g.allocation_pct}% alloc</span></span>` +
-        `<span class="amt">${App.fmtMoney(g.funded_minor, g.currency)} / ` +
-        `${App.fmtMoney(g.target_minor, g.currency)} · ${pct.toFixed(0)}%</span>`;
+        `<span class="cat">${App.esc(g.name)} ${badges}</span>` +
+        `<span class="amt">${amt}</span>`;
       row.appendChild(head);
 
-      const track = document.createElement("div");
-      track.className = "bar-track";
-      const fill = document.createElement("div");
-      fill.className = "bar-fill" + (g.pace === "behind" ? " pace" : "");
-      fill.style.width = pct + "%";
-      track.appendChild(fill);
-      row.appendChild(track);
+      if (!isPerpetual) {
+        const track = document.createElement("div");
+        track.className = "bar-track";
+        const fill = document.createElement("div");
+        fill.className = "bar-fill" + (g.pace === "behind" ? " pace" : "");
+        fill.style.width = pct + "%";
+        track.appendChild(fill);
+        row.appendChild(track);
+      }
 
       const actions = document.createElement("div");
       actions.className = "goal-actions";
@@ -95,6 +131,22 @@
 
     async function render() {
       const all = await App.api("/api/goals?include_archived=true");
+
+      // This-month funding chips are a nice-to-have on top of the goals list —
+      // if /api/projection fails, degrade to rows without chips rather than
+      // breaking the page.
+      let projMap = new Map();
+      try {
+        const projection = await App.api("/api/projection");
+        for (const row of projection) {
+          for (const gf of row.goal_funding || []) {
+            projMap.set(gf.goal_id, { status: gf.status, allocated_minor: gf.allocated_minor, ask_minor: gf.ask_minor });
+          }
+        }
+      } catch (_) {
+        projMap = new Map();
+      }
+
       const active = all.filter((g) => g.active);
       const archived = all.filter((g) => !g.active);
 
@@ -103,7 +155,7 @@
       if (!active.length) {
         App.empty(wrap, "No goals yet. Use <b>＋ New goal</b> to add one.");
       } else {
-        for (const g of active) wrap.appendChild(goalRow(g, false));
+        for (const g of active) wrap.appendChild(goalRow(g, false, projMap));
       }
 
       const block = App.el("archived-block");
@@ -111,7 +163,7 @@
       block.querySelector("summary").textContent = `Archived (${archived.length})`;
       const arcWrap = App.el("archived");
       arcWrap.innerHTML = "";
-      for (const g of archived) arcWrap.appendChild(goalRow(g, true));
+      for (const g of archived) arcWrap.appendChild(goalRow(g, true, projMap));
     }
 
     function field(card, label, input, hint) {
@@ -151,12 +203,56 @@
       name.placeholder = "e.g. japan-trip";
       field(card, "Name", name);
 
+      // Funding mode: 'target_date' self-computes its monthly ask from what's left
+      // and the time remaining; 'fixed_monthly' sets aside a flat amount, funded
+      // first when money is tight.
+      const modeWrap = document.createElement("div");
+      modeWrap.className = "radios";
+      const modeTargetLbl = document.createElement("label");
+      const modeTarget = document.createElement("input");
+      modeTarget.type = "radio";
+      modeTarget.name = "funding_mode";
+      modeTarget.value = "target_date";
+      modeTargetLbl.appendChild(modeTarget);
+      modeTargetLbl.appendChild(document.createTextNode("Save toward a target"));
+      const modeFixedLbl = document.createElement("label");
+      const modeFixed = document.createElement("input");
+      modeFixed.type = "radio";
+      modeFixed.name = "funding_mode";
+      modeFixed.value = "fixed_monthly";
+      modeFixedLbl.appendChild(modeFixed);
+      modeFixedLbl.appendChild(document.createTextNode("Fixed monthly amount"));
+      modeWrap.appendChild(modeTargetLbl);
+      modeWrap.appendChild(modeFixedLbl);
+      if (existing && existing.funding_mode === "fixed_monthly") modeFixed.checked = true;
+      else modeTarget.checked = true;
+      field(card, "Funding mode", modeWrap,
+            "Target goals compute their own monthly ask from what's left and the time " +
+            "remaining. Fixed buckets set aside the same amount every month, first.");
+
+      const monthly = document.createElement("input");
+      monthly.value = existing && existing.monthly_minor != null
+        ? (existing.monthly_minor / Math.pow(10, expOf(existing.currency))).toFixed(expOf(existing.currency))
+        : "";
+      monthly.placeholder = "500.00";
+      field(card, "Monthly amount", monthly, "Set aside every month, before fun money.");
+      // field() appends `monthly` straight into the `.fld` wrapper it just built,
+      // so the wrapper is `monthly`'s parent right after the call returns.
+      const monthlyFld = monthly.parentElement;
+      const updateMonthlyVisibility = () => {
+        monthlyFld.style.display = modeFixed.checked ? "" : "none";
+      };
+      modeTarget.addEventListener("change", updateMonthlyVisibility);
+      modeFixed.addEventListener("change", updateMonthlyVisibility);
+      updateMonthlyVisibility();
+
       const target = document.createElement("input");
       target.value = existing
         ? (existing.target_minor / Math.pow(10, expOf(existing.currency))).toFixed(expOf(existing.currency))
         : "";
       target.placeholder = "3000.00";
-      field(card, "Target", target);
+      field(card, "Target", target,
+            "The total you're saving toward. Optional for fixed buckets (0 = perpetual).");
 
       const currency = document.createElement("select");
       for (const c of CURRENCIES) {
@@ -186,6 +282,13 @@
       field(card, "Allocation %", alloc,
             "Share of that currency's net savings credited to this goal.");
 
+      const priority = document.createElement("input");
+      priority.type = "number";
+      priority.min = "0";
+      priority.max = "999";
+      priority.value = existing && existing.priority != null ? existing.priority : "100";
+      field(card, "Priority", priority, "Lower = funded first when money is tight.");
+
       const note = document.createElement("input");
       note.value = existing && existing.note ? existing.note : "";
       field(card, "Note (optional)", note);
@@ -207,14 +310,20 @@
       overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
 
       save.onclick = async () => {
+        const fundingMode = modeFixed.checked ? "fixed_monthly" : "target_date";
         const body = {
           name: name.value,
-          target: target.value,
+          target: target.value || null,
           currency: currency.value,
           start_date: start.value,
           target_date: tgtDate.value || null,
           allocation_pct: Number(alloc.value),
           note: note.value || null,
+          funding_mode: fundingMode,
+          // A hidden leftover value in the monthly field must not sneak into a
+          // target_date save and trip the server's "must not be set" 400.
+          monthly: fundingMode === "fixed_monthly" ? (monthly.value || null) : null,
+          priority: Number(priority.value),
         };
         save.disabled = true;
         try {
