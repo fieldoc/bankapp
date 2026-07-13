@@ -49,8 +49,9 @@ def spend_by_category(conn: sqlite3.Connection, month: str) -> list[SpendRow]:
 #   income sources -> Income -> category groups (+ Savings) -> categories
 # Band width = dollars. The income and spend totals are read straight from
 # v_monthly_cashflow, and the per-source / per-category queries reuse that
-# view's exact predicates, so the partitioned sums reconcile with it by
-# construction (asserted in tests).
+# view's exact predicates. Reimbursements a category can't absorb are re-routed
+# to an income-side "Reimbursements" source (see _REIMB_KEY), so the Income
+# node's inflow always equals its outflow (asserted in tests).
 
 _DIRECT_DEPOSIT_RE = re.compile(r"^direct deposit: from\s+(.+)$")
 
@@ -76,6 +77,12 @@ _SAVINGS_KEY = "sav:Savings"
 # dollar it emits (mirrors the Savings sink of a surplus month), instead of a
 # sourceless gap left by the renderer's max-sizing.
 _DRAWDOWN_KEY = "src:From savings"
+# Reimbursement inflows a category can't absorb (uncategorized paybacks, or a
+# reimbursement larger than its category's spend). The view nets these against
+# total spend, but per-category netting has nowhere to put them -- dropping them
+# silently drew spend bands larger than income. Routed instead as an explicit
+# income-side source, so the diagram shows gross spend + where the money back came from.
+_REIMB_KEY = "src:Reimbursements"
 
 
 def income_source_label(description_norm: Optional[str]) -> str:
@@ -166,23 +173,29 @@ def month_flows(
         links.append(FlowLink(key, _INCOME_KEY, amt))
 
     # 3. Spend side per category: the view's spend arm, partitioned by category.
-    #    Ungrouped reimbursement inflows net against their own category's spend.
+    #    Ungrouped reimbursement inflows net against their own category's spend,
+    #    clamped at zero. Whatever a category can't absorb (NULL-category
+    #    paybacks, or a reimbursement exceeding its category) accumulates into
+    #    reimb_excess and becomes a source band into Income below.
     cat_rows = conn.execute(
         """SELECT COALESCE(category, '(uncategorized)') AS cat,
-                  SUM(CASE WHEN effective_minor < 0 THEN -effective_minor ELSE 0 END)
-                - SUM(CASE WHEN effective_minor > 0
+                  SUM(CASE WHEN effective_minor < 0 THEN -effective_minor ELSE 0 END) AS gross,
+                  SUM(CASE WHEN effective_minor > 0
                              AND role_hint IS 'reimbursement' AND group_role IS NULL
-                           THEN effective_minor ELSE 0 END) AS spend
+                           THEN effective_minor ELSE 0 END) AS reimb
            FROM v_effective
            WHERE substr(posted_date,1,7) = ? AND currency = ?
            GROUP BY cat""",
         (month, currency),
     ).fetchall()
     group_totals: dict[str, int] = {}
+    reimb_excess = 0
     for r in cat_rows:
-        spend = r["spend"] or 0
+        gross, reimb = r["gross"] or 0, r["reimb"] or 0
+        reimb_excess += max(reimb - gross, 0)
+        spend = gross - reimb
         if spend <= 0:
-            continue  # negative-net (refund-heavy) category: unrenderable band, omit
+            continue  # fully reimbursed or negative-net category: unrenderable band, omit
         cat = r["cat"]
         group = category_groups.get(cat, FALLBACK_GROUP)
         grp_key, cat_key = f"grp:{group}", f"cat:{cat}"
@@ -192,6 +205,9 @@ def month_flows(
         group_totals[grp_key] = group_totals.get(grp_key, 0) + spend
     for grp_key, total in sorted(group_totals.items(), key=lambda kv: (-kv[1], kv[0])):
         links.append(FlowLink(_INCOME_KEY, grp_key, total))
+    if reimb_excess > 0:
+        labels[_REIMB_KEY] = "Reimbursements"
+        links.append(FlowLink(_REIMB_KEY, _INCOME_KEY, reimb_excess))
 
     # 4. Savings: the leftover. Positive -> a terminal band out of Income.
     #    Overspent -> a "From savings" source band INTO Income covering the

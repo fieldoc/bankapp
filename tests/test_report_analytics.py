@@ -206,6 +206,57 @@ def test_month_flows_dominant_currency(conn):
     assert all("USD" not in k for k in mf.labels)
 
 
+def test_month_flows_null_category_reimbursement_balances(conn):
+    # Roommate-payback e-transfers: reimbursement inflows with NO category.
+    # They can't be netted against any spend category, so they must show up as
+    # an explicit income-side source — not silently vanish while every
+    # category band stays gross (which drew spend > income for 2026-06).
+    a = insert_account(conn)
+    _txn(conn, a, "2026-09-01", 500000, "direct deposit: from cloud produce a", "i1", category="income")
+    _txn(conn, a, "2026-09-02", -100000, "loblaws", "s1", category="groceries")
+    _txn(conn, a, "2026-09-03", -80000, "dinner", "s2", category="dining")
+    _txn(conn, a, "2026-09-04", 30000, "e-transfer ***abc", "r1", role_hint="reimbursement")
+    mf = analytics.month_flows(conn, "2026-09", {"groceries": "Food", "dining": "Food"})
+
+    row = conn.execute(
+        "SELECT income_minor, spend_minor FROM v_monthly_cashflow WHERE month='2026-09' AND currency='CAD'"
+    ).fetchone()
+    assert mf.income_total_minor == row["income_minor"] == 500000
+    assert mf.spend_total_minor == row["spend_minor"] == 150000
+    # the unattributable reimbursement is an explicit source into Income
+    reimb = [l for l in mf.links if l.source == "src:Reimbursements"]
+    assert len(reimb) == 1
+    assert reimb[0].target == "inc:Income" and reimb[0].flow_minor == 30000
+    # category bands keep gross spend (nothing tells us which category to net)
+    assert {(l.target, l.flow_minor) for l in _links_to(mf, "cat:")} == {
+        ("cat:groceries", 100000), ("cat:dining", 80000)
+    }
+    # Income node balances: 500000 income + 30000 reimb = 180000 spend + 350000 savings
+    inflow = sum(l.flow_minor for l in _links_to(mf, "inc:"))
+    outflow = sum(l.flow_minor for l in _links_from(mf, "inc:"))
+    assert inflow == outflow == 530000
+
+
+def test_month_flows_reimbursement_excess_routes_to_income_side(conn):
+    # A categorized reimbursement larger than its category's spend: the category
+    # nets to zero and disappears (unrenderable), and only the EXCESS becomes an
+    # income-side source, keeping the Income node balanced.
+    a = insert_account(conn)
+    _txn(conn, a, "2026-10-01", 100000, "direct deposit: from cloud produce a", "i1", category="income")
+    _txn(conn, a, "2026-10-02", -5000, "dinner", "s1", category="dining")
+    _txn(conn, a, "2026-10-03", 8000, "etransfer from friend", "s2",
+         category="dining", role_hint="reimbursement")
+    mf = analytics.month_flows(conn, "2026-10", {})
+    assert not any(l.target == "cat:dining" for l in mf.links)
+    reimb = [l for l in mf.links if l.source == "src:Reimbursements"]
+    assert len(reimb) == 1 and reimb[0].flow_minor == 3000
+    inflow = sum(l.flow_minor for l in _links_to(mf, "inc:"))
+    outflow = sum(l.flow_minor for l in _links_from(mf, "inc:"))
+    # 100000 income + 3000 excess = 0 spend bands + 103000 savings
+    assert inflow == outflow == 103000
+    assert mf.savings_minor == 103000  # view spend is -3000: 100000 - (-3000)
+
+
 def test_month_flows_negative_net_category_omitted(conn):
     a = insert_account(conn)
     _txn(conn, a, "2026-08-01", 100000, "direct deposit: from cloud produce a", "i1", category="income")
