@@ -34,16 +34,17 @@
       throw err;
     }
     if (!res.ok) {
-      let detail = `HTTP ${res.status}`;
+      // Surface the server's own message (already user-friendly, e.g. "CAD is 20%
+      // allocated; this goal can take at most 80%"). No raw "/api/... failed:" prefix.
+      let detail = `Request failed (HTTP ${res.status}).`;
       try { const j = await res.json(); if (j && j.detail) detail = j.detail; } catch (_) {}
-      App.banner(`${path} failed: ${detail}`);
+      App.banner(detail);
       throw new Error(detail);
     }
     return await res.json();
   };
 
   App.banner = function (msg) {
-    const main = document.querySelector("main") || document.body;
     const el = document.createElement("div");
     el.className = "err-banner";
     const span = document.createElement("span");
@@ -53,7 +54,16 @@
     btn.onclick = () => el.remove();
     el.appendChild(span);
     el.appendChild(btn);
-    main.insertBefore(el, main.firstChild);
+    // If a modal is open, show the error inside it (next to the actions) rather than
+    // at the top of the page where it can be a full scroll away from what the user did.
+    const card = document.querySelector(".modal-card");
+    if (card) {
+      card.querySelectorAll(":scope > .err-banner").forEach((n) => n.remove());
+      card.insertBefore(el, card.querySelector(".modal-actions"));
+    } else {
+      const main = document.querySelector("main") || document.body;
+      main.insertBefore(el, main.firstChild);
+    }
   };
 
   // Transient success notice (auto-dismisses). Distinct from the error banner.

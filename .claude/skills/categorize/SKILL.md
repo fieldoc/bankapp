@@ -26,9 +26,19 @@ wait in the queue; the pipeline stays fully functional without it.
    - If a line looks like a transfer between the user's own accounts (e.g. `tfr-to`,
      `eft`, `e-transfer to wealthsimple`), tag it with `--role transfer` (leave
      `--category` unset) so the matcher nets it out instead of counting it as spend.
+   - **EXCEPTION — transfers into a locked/untracked account** (e.g. `to wealthsimple
+     tfsa`, `wealthsimple crypto`, an RRSP): do **not** use `--role transfer`. The
+     counterpart leg is never ingested for a locked account, so a `transfer` hint leaves
+     the leg pending forever. Categorize it `--category investment` instead — that money
+     genuinely left the spendable world. (Check `finance accounts list` for which
+     Wealthsimple accounts are locked.)
+   - **Person-name e-transfers** (a bare human name / personal email, e.g. `e-transfer to
+     jane doe janedoe@gmail.com`) are NOT a spending category. Do not guess `transport`,
+     `dining`, etc. from a name. Prefer `--role reimbursement` if it's someone repaying a
+     shared expense, otherwise hand it back as ambiguous (step 6). A name is not a merchant.
    - Suggested category vocabulary (not exhaustive): `groceries, dining, subscriptions,
      transport, utilities, rent, income, fees, shopping, health, entertainment,
-     transfer`.
+     investment, transfer`.
 4. **Persist each verdict as a rule via the CLI only:**
    ```
    finance rules add --kind substring --pattern "<token>" --category "<category>" --source claude

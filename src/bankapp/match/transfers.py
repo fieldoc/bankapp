@@ -24,6 +24,8 @@ class Leg:
     account_id: int
     posted_date: str  # 'YYYY-MM-DD'
     amount_minor: int  # signed
+    currency: str = "CAD"
+    description_norm: str = ""
 
 
 @dataclass(frozen=True)
@@ -36,14 +38,42 @@ def _days_between(a: str, b: str) -> int:
     return abs((date.fromisoformat(a) - date.fromisoformat(b)).days)
 
 
+def _tokens(desc: str) -> frozenset[str]:
+    """Alphanumeric tokens (>=2 chars) of a normalized description, for overlap scoring.
+
+    Sub-account codes like ``wk2pdhr38cad`` / ``h62239605cad`` survive as single tokens,
+    so the true counterpart (which shares the code + account-type words) scores higher
+    than a coincidental same-amount/same-day leg with a different code.
+    """
+    out: set[str] = set()
+    tok = ""
+    for ch in desc.lower():
+        if ch.isalnum():
+            tok += ch
+        else:
+            if len(tok) >= 2:
+                out.add(tok)
+            tok = ""
+    if len(tok) >= 2:
+        out.add(tok)
+    return frozenset(out)
+
+
+def _desc_overlap(a: str, b: str) -> int:
+    return len(_tokens(a) & _tokens(b))
+
+
 def pair_legs(legs: Iterable[Leg], window_days: int, tolerance_minor: int) -> list[Pair]:
     """Greedy one-to-one pairing of outflow/inflow legs across different accounts.
 
-    A candidate (out, in) requires: different accounts, ``|out.amount + in.amount| <=
-    tolerance_minor`` (fee tolerance), and ``date_diff <= window_days`` in either order
-    (TD batch lag can post the out after the in). Candidates are sorted by
-    (date_diff, amount_diff, out.id, in.id) so ties break deterministically regardless
-    of input order; the greedy pass then takes each once.
+    A candidate (out, in) requires: different accounts, SAME currency (a $500 USD
+    outflow must never pair with a coincidental $500 CAD inflow), ``|out.amount +
+    in.amount| <= tolerance_minor`` (fee tolerance), and ``date_diff <= window_days`` in
+    either order (TD batch lag can post the out after the in). Candidates are sorted by
+    (date_diff, amount_diff, -desc_overlap, out.id, in.id): among legs tied on date and
+    amount, the pair whose descriptions share the most tokens (e.g. the same WS
+    sub-account code) wins, so two same-amount/same-day transfers to different
+    sub-accounts don't cross-pair. The greedy pass then takes each leg once.
     """
     legs = list(legs)
     outs = [l for l in legs if l.amount_minor < 0]
@@ -54,19 +84,22 @@ def pair_legs(legs: Iterable[Leg], window_days: int, tolerance_minor: int) -> li
         for i in ins:
             if o.account_id == i.account_id:
                 continue
+            if o.currency != i.currency:
+                continue
             amount_diff = abs(o.amount_minor + i.amount_minor)
             if amount_diff > tolerance_minor:
                 continue
             date_diff = _days_between(o.posted_date, i.posted_date)
             if date_diff > window_days:
                 continue
-            candidates.append((date_diff, amount_diff, o.id, i.id))
+            overlap = _desc_overlap(o.description_norm, i.description_norm)
+            candidates.append((date_diff, amount_diff, -overlap, o.id, i.id))
 
-    candidates.sort()  # (date_diff, amount_diff, out_id, in_id)
+    candidates.sort()  # (date_diff, amount_diff, -overlap, out_id, in_id)
 
     used: set[int] = set()
     pairs: list[Pair] = []
-    for _date_diff, _amount_diff, out_id, in_id in candidates:
+    for _date_diff, _amount_diff, _neg_overlap, out_id, in_id in candidates:
         if out_id in used or in_id in used:
             continue
         used.add(out_id)
@@ -77,13 +110,17 @@ def pair_legs(legs: Iterable[Leg], window_days: int, tolerance_minor: int) -> li
 
 def _ungrouped_hinted_legs(conn: sqlite3.Connection) -> list[Leg]:
     rows = conn.execute(
-        """SELECT r.id, r.account_id, r.posted_date, r.amount_minor
+        """SELECT r.id, r.account_id, r.posted_date, r.amount_minor, r.currency, r.description_norm
            FROM raw_txn r
            JOIN txn_interp i ON i.raw_txn_id = r.id AND i.role_hint = 'transfer'
            LEFT JOIN group_members gm ON gm.raw_txn_id = r.id
            WHERE gm.raw_txn_id IS NULL"""
     ).fetchall()
-    return [Leg(r["id"], r["account_id"], r["posted_date"], r["amount_minor"]) for r in rows]
+    return [
+        Leg(r["id"], r["account_id"], r["posted_date"], r["amount_minor"],
+            r["currency"], r["description_norm"])
+        for r in rows
+    ]
 
 
 def clear_generic_groups(conn: sqlite3.Connection) -> None:

@@ -37,9 +37,19 @@
     function render() {
       let rows = "";
       for (const r of recs) {
-        const settled = r.status === "settled" || r.outstanding_minor === 0;
-        const cls = settled ? "dim" : "";
-        const statusBadge = settled ? `<span class="badge ok">settled</span>` : `<span class="badge pace">${App.esc(r.status)}</span>`;
+        // "settled" must mean nothing is owed. A nonzero outstanding with a live Settle
+        // button can't also read "settled" — derive the badge from outstanding so the
+        // status and the button never contradict.
+        const trulySettled = r.outstanding_minor === 0;
+        const cls = trulySettled ? "dim" : "";
+        let statusBadge;
+        if (trulySettled) {
+          statusBadge = `<span class="badge ok">settled</span>`;
+        } else if ((r.received_minor || 0) > 0 || (r.settled_minor || 0) > 0) {
+          statusBadge = `<span class="badge pace">partially settled</span>`;
+        } else {
+          statusBadge = `<span class="badge pace">${App.esc(r.status || "outstanding")}</span>`;
+        }
         const action = r.outstanding_minor > 0
           ? `<button class="btn mini ghost" data-settle="${r.group_id}">Settle</button>`
           : "";

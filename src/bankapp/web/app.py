@@ -1,7 +1,8 @@
 """FastAPI app factory + local-only server entrypoint.
 
-Binds 127.0.0.1 only. Mostly read-only; the two categorization POST routes in api.py
-are the sole write path, and they go through the classify engine.
+Binds 127.0.0.1 only. Mostly read-only; the write routes in api.py (categorization,
+goals, receivables) go through their respective engines. All state-changing routes are
+guarded against cross-origin (CSRF) requests by SameOriginMiddleware (see web/security.py).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from starlette.staticfiles import StaticFiles
 
 from bankapp.config import Config
 from bankapp.web import api
+from bankapp.web.security import SameOriginMiddleware
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
@@ -40,6 +42,9 @@ def _port_in_use(port: int, host: str = "127.0.0.1") -> bool:
 def create_app(cfg: Config) -> FastAPI:
     app = FastAPI(title="BankApp")
     app.state.cfg = cfg
+    # CSRF: block cross-origin state-changing requests. Harmless to reads and to
+    # non-browser clients (the categorize skill / CLI send no browser headers).
+    app.add_middleware(SameOriginMiddleware)
     app.include_router(api.router)
     # Static mount goes last: it's mounted at "/" with html=True (serves index.html
     # for directory requests), so routes registered after it would be unreachable.

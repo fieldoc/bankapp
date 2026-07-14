@@ -26,8 +26,10 @@ UNUSUAL_MIN_HISTORY = 4         # minimum prior charges needed to establish a no
 UNUSUAL_MULT = 2.5              # latest must exceed this multiple of the median
 UNUSUAL_ABS_FLOOR_MINOR = 1000  # ...and the absolute jump must clear this floor
 UNUSUAL_LOOKBACK_DAYS = 60      # only flag spikes that are still "recent"
-STOPPED_MULT = 1.5              # quiet-past-cadence multiplier
+STOPPED_MULT = 1.5              # quiet-past-cadence multiplier (lower trigger)
+STOPPED_CEIL_MULT = 3.0         # ...and stop surfacing once quiet past this many cadences
 DUP_WINDOW_DAYS = 3             # adjacent same-amount charges within this many days
+DUP_LOOKBACK_DAYS = 60          # only surface a duplicate whose later charge is still "recent"
 
 
 @dataclass(frozen=True)
@@ -83,8 +85,10 @@ def detect_unusual_charges(txns: Iterable[tuple], today: date) -> list[Anomaly]:
 
 
 def detect_stopped_subscriptions(subs: Iterable, today: date) -> list[Anomaly]:
-    """For each Subscription, flag it if it has gone quiet past STOPPED_MULT times
-    its cadence interval (monthly=30d / weekly=7d / annual=365d)."""
+    """Flag a subscription that recently went quiet: quiet past STOPPED_MULT cadences
+    (the trigger) but not yet past STOPPED_CEIL_MULT cadences (the ceiling). A sub
+    cancelled a year ago is not news and would otherwise re-emit on every run forever;
+    the ceiling lets it fall off once it's clearly gone (monthly: ~45d..90d window)."""
     interval_days = {"monthly": 30, "weekly": 7, "annual": 365}
     out: list[Anomaly] = []
     for s in subs:
@@ -93,7 +97,7 @@ def detect_stopped_subscriptions(subs: Iterable, today: date) -> list[Anomaly]:
             continue
         last = date.fromisoformat(s.last_charge)
         days_since = (today - last).days
-        if days_since > STOPPED_MULT * interval:
+        if STOPPED_MULT * interval < days_since <= STOPPED_CEIL_MULT * interval:
             out.append(Anomaly(
                 kind="stopped_subscription", merchant=s.merchant, currency=s.currency,
                 amount_minor=s.monthly_cost_minor, date=s.last_charge,
@@ -102,11 +106,13 @@ def detect_stopped_subscriptions(subs: Iterable, today: date) -> list[Anomaly]:
     return out
 
 
-def detect_duplicate_charges(txns: Iterable[tuple]) -> list[Anomaly]:
+def detect_duplicate_charges(txns: Iterable[tuple], today: date) -> list[Anomaly]:
     """txns: (account_id, posted_date, amount_minor, merchant, currency); outflows only.
 
     Groups by (account_id, merchant, amount_minor, currency); within each group,
-    any two date-adjacent charges <= DUP_WINDOW_DAYS apart each emit one Anomaly.
+    any two date-adjacent charges <= DUP_WINDOW_DAYS apart emit one Anomaly -- but only
+    when the later charge is still within DUP_LOOKBACK_DAYS of ``today``. Without the
+    recency bound a duplicate from years ago re-emits on every digest run forever.
     """
     groups: dict[tuple, list[str]] = {}
     for account_id, posted_date, amount_minor, merchant, currency in txns:
@@ -120,7 +126,7 @@ def detect_duplicate_charges(txns: Iterable[tuple]) -> list[Anomaly]:
         for i in range(len(dates_sorted) - 1):
             d1 = date.fromisoformat(dates_sorted[i])
             d2 = date.fromisoformat(dates_sorted[i + 1])
-            if (d2 - d1).days <= DUP_WINDOW_DAYS:
+            if (d2 - d1).days <= DUP_WINDOW_DAYS and (today - d2).days <= DUP_LOOKBACK_DAYS:
                 out.append(Anomaly(
                     kind="duplicate_charge", merchant=merchant, currency=currency,
                     amount_minor=amount_minor, date=dates_sorted[i + 1],
@@ -158,5 +164,5 @@ def anomalies_from_db(conn: sqlite3.Connection, today: Optional[date] = None) ->
 
     unusual = sorted(detect_unusual_charges(unusual_txns, today), key=lambda a: a.merchant)
     stopped = sorted(detect_stopped_subscriptions(subs, today), key=lambda a: a.merchant)
-    duplicate = sorted(detect_duplicate_charges(dup_txns), key=lambda a: a.merchant)
+    duplicate = sorted(detect_duplicate_charges(dup_txns, today), key=lambda a: a.merchant)
     return unusual + stopped + duplicate

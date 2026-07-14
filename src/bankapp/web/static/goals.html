@@ -34,10 +34,14 @@
     const expOf = (ccy) => (App.meta.currencies && App.meta.currencies[ccy] != null)
       ? App.meta.currencies[ccy] : 2;
 
+    // Pace is the OVERALL track (cumulative funded vs elapsed time). It reads
+    // alongside the separate "this month: …" funding chip, so it's labelled
+    // "overall" to make clear the two aren't contradictory: a goal can be behind
+    // overall yet have this month's ask fully funded.
     function paceBadge(g) {
-      if (g.pace === "behind") return { cls: "pace", txt: "behind" };
+      if (g.pace === "behind") return { cls: "pace", txt: "behind overall" };
       if (g.pace === "no_target") return { cls: "role", txt: "no target date" };
-      return { cls: "ok", txt: "on track" };
+      return { cls: "ok", txt: "on track overall" };
     }
 
     function actionBtn(cls, label, onclick) {
@@ -91,16 +95,24 @@
         }
       }
 
+      // Nothing (or negative) accrued yet: a "0%" / "-17.01 / 2,000" reads as broken.
+      // Show "just started" and keep the honest signed figure on hover.
+      const notStarted = !isPerpetual && g.funded_minor <= 0;
       const amt = isPerpetual
         ? `${App.fmtMoney(g.funded_minor, g.currency)} saved`
-        : `${App.fmtMoney(g.funded_minor, g.currency)} / ` +
-          `${App.fmtMoney(g.target_minor, g.currency)} · ${pct.toFixed(0)}%`;
+        : notStarted
+          ? `just started · ${App.fmtMoney(g.target_minor, g.currency)} goal`
+          : `${App.fmtMoney(g.funded_minor, g.currency)} / ` +
+            `${App.fmtMoney(g.target_minor, g.currency)} · ${pct.toFixed(0)}%`;
+      const amtTitle = notStarted
+        ? ` title="${App.fmtMoney(g.funded_minor, g.currency)} funded so far"`
+        : "";
 
       const head = document.createElement("div");
       head.className = "bar-head";
       head.innerHTML =
         `<span class="cat">${App.esc(g.name)} ${badges}</span>` +
-        `<span class="amt">${amt}</span>`;
+        `<span class="amt"${amtTitle}>${amt}</span>`;
       row.appendChild(head);
 
       if (!isPerpetual) {
@@ -326,7 +338,12 @@
           currency: currency.value,
           start_date: start.value,
           target_date: tgtDate.value || null,
-          allocation_pct: Number(alloc.value),
+          // Number("") is 0 — a cleared field must fall back to the default (the
+          // goal's current allocation on edit, else 100), not silently drop the goal
+          // to 0% and stop funding it. Same reasoning as `priority` below.
+          allocation_pct: alloc.value === ""
+            ? (existing ? existing.allocation_pct : 100)
+            : Number(alloc.value),
           note: note.value || null,
           funding_mode: fundingMode,
           // A hidden leftover value in the monthly field must not sneak into a

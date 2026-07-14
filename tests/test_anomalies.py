@@ -127,7 +127,7 @@ def test_duplicate_charge_fires_within_window():
         (1, "2026-03-01", -2500, "uber", "CAD"),
         (1, "2026-03-02", -2500, "uber", "CAD"),
     ]
-    out = anomalies.detect_duplicate_charges(txns)
+    out = anomalies.detect_duplicate_charges(txns, date(2026, 3, 20))
     assert len(out) == 1
     a = out[0]
     assert a.kind == "duplicate_charge"
@@ -142,7 +142,7 @@ def test_duplicate_charge_does_not_fire_outside_window():
         (1, "2026-03-01", -2500, "uber", "CAD"),
         (1, "2026-03-10", -2500, "uber", "CAD"),
     ]
-    assert anomalies.detect_duplicate_charges(txns) == []
+    assert anomalies.detect_duplicate_charges(txns, date(2026, 3, 20)) == []
 
 
 def test_duplicate_charge_requires_same_account():
@@ -150,7 +150,28 @@ def test_duplicate_charge_requires_same_account():
         (1, "2026-03-01", -2500, "uber", "CAD"),
         (2, "2026-03-02", -2500, "uber", "CAD"),
     ]
-    assert anomalies.detect_duplicate_charges(txns) == []
+    assert anomalies.detect_duplicate_charges(txns, date(2026, 3, 20)) == []
+
+
+def test_duplicate_charge_suppressed_when_stale():
+    # An adjacent pair from over a year ago must not re-surface today.
+    txns = [
+        (1, "2024-09-23", -366, "bcf", "CAD"),
+        (1, "2024-09-25", -366, "bcf", "CAD"),
+    ]
+    assert anomalies.detect_duplicate_charges(txns, date(2026, 7, 13)) == []
+
+
+def test_stopped_subscription_suppressed_past_ceiling():
+    # Quiet ~1 year: past the STOPPED_CEIL_MULT ceiling, so it drops off (old news).
+    today = date(2026, 7, 13)
+    subs = [
+        advisor.Subscription(
+            merchant="oldsub.com", currency="CAD", cadence="monthly",
+            monthly_cost_minor=999, last_charge="2025-07-01", count=6, price_creep=False,
+        )
+    ]
+    assert anomalies.detect_stopped_subscriptions(subs, today) == []
 
 
 # ---- anomalies_from_db composer ----------------------------------------------

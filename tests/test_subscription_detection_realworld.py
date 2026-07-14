@@ -82,6 +82,29 @@ def test_one_spike_month_does_not_hide_subscription():
     assert subs[0].monthly_cost_minor == 15680
 
 
+def test_habit_merchant_irregular_cadence_excluded():
+    """A frequently-visited habit merchant (same ~$5 coffee) whose spacing is erratic
+    must NOT be called a subscription even though its median interval lands in a cadence
+    bucket. Irregular intervals (0..many days) blow past the coefficient-of-variation
+    guard. Reproduces the Tim Hortons / 7-Eleven false positives from the review."""
+    coffee = -525
+    dates = [
+        "2026-01-02", "2026-01-02", "2026-01-09", "2026-01-23", "2026-01-24",
+        "2026-02-14", "2026-02-15", "2026-03-01", "2026-03-02", "2026-03-20",
+    ]  # median gap ~ a week, but wildly dispersed (same-day pairs + long gaps)
+    txns = [_t(d, coffee, "purchase: tim hortons") for d in dates]
+    assert advisor.detect_subscriptions(txns) == []
+
+
+def test_regular_weekly_sub_still_detected():
+    """The consistency guard must not drop a genuinely regular weekly charge."""
+    txns = [_t(d, -1499, "acme weekly") for d in
+            ("2026-01-05", "2026-01-12", "2026-01-19", "2026-01-26", "2026-02-02")]
+    subs = advisor.detect_subscriptions(txns)
+    assert len(subs) == 1
+    assert subs[0].cadence == "weekly"
+
+
 def test_erratic_amounts_still_excluded():
     """No dominant amount-cluster = not a subscription (regular-cadence groceries
     must not flood the report)."""

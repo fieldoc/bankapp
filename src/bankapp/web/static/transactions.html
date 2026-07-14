@@ -121,10 +121,12 @@
           ? `<span class="strike">${App.fmtMoney(t.amount_minor, t.currency)}</span> <span class="muted">0.00</span>`
           : moneyCell(t.effective_minor, t.currency);
         const roleBadge = t.group_role ? `<span class="badge role">${App.esc(t.group_role)}</span>` : "";
-        const uncategorized = t.category === "(uncategorized)";
+        // A netted transfer leg is already accounted for (it nets to 0) — offering to
+        // categorize it is meaningless, so treat only NON-netted unknowns as actionable.
+        const uncategorized = t.category === "(uncategorized)" && !netted;
         const catCell = uncategorized
           ? `<button class="btn mini cat-btn" data-id="${t.id}" data-desc="${App.esc(t.description_norm)}">＋ categorize</button>`
-          : App.esc(t.category);
+          : (netted ? "" : App.esc(t.category));
         const checkCell = uncategorized
           ? `<td><input type="checkbox" class="tx-check" data-id="${t.id}"></td>`
           : `<td></td>`;
@@ -174,14 +176,22 @@
       if (spendChart) { spendChart.destroy(); spendChart = null; }
       if (!rows.length) { App.empty(panel, "No spend recorded for " + month + "."); return; }
       panel.innerHTML = `<div class="chart-wrap short"><canvas id="spend-chart"></canvas></div>`;
-      const exp = App.exponentFor(rows[0].currency || "CAD");
+      const cur = rows[0].currency || "CAD";
+      const exp = App.exponentFor(cur);
       spendChart = new Chart(App.el("spend-chart"), {
         type: "doughnut",
         data: {
           labels: rows.map((r) => r.category),
           datasets: [{ data: rows.map((r) => r.spend_minor / Math.pow(10, exp)), backgroundColor: App.palette(), borderWidth: 0 }],
         },
-        options: { plugins: { legend: { position: "right" } } },
+        options: {
+          plugins: {
+            legend: { position: "right" },
+            tooltip: { callbacks: {
+              label: (ctx) => `${ctx.label}: ${App.fmtMoney(rows[ctx.dataIndex].spend_minor, cur)}`,
+            } },
+          },
+        },
       });
     }
 

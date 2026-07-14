@@ -349,7 +349,12 @@
         byCcy.get(s.currency).push(s);
       }
       const volumeOf = (ccy) => byCcy.get(ccy).reduce((sum, s) => sum + (s.income_minor || 0) + (s.spend_minor || 0), 0);
-      const currencies = [...byCcy.keys()].sort((a, b) => volumeOf(b) - volumeOf(a));
+      // Drop currencies with no actual activity (e.g. an all-zero USD series) so the
+      // legend doesn't carry three empty income/spend/net entries for a currency the
+      // user doesn't transact in.
+      const hasActivity = (ccy) => byCcy.get(ccy).some(
+        (s) => (s.income_minor || 0) !== 0 || (s.spend_minor || 0) !== 0 || (s.net_minor || 0) !== 0);
+      const currencies = [...byCcy.keys()].filter(hasActivity).sort((a, b) => volumeOf(b) - volumeOf(a));
       // The dominant currency keeps the semantic income/spend/net colours. Every other
       // currency takes ONE distinct hue (never the dominant trio's) and varies alpha
       // across its three series — a hue per currency, so no two currencies collide.

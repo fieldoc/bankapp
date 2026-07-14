@@ -126,13 +126,19 @@ LEFT JOIN group_members gm ON gm.raw_txn_id = r.id
 LEFT JOIN groups g ON g.id = gm.group_id;
 
 -- Lone transfer legs: NORMAL (TD weekly batches vs WS realtime), surfaced with age.
+-- Capped at 120 days: a leg unmatched that long will never match (its counterpart
+-- would have arrived), so it's noise, not a pending transfer. This is what stops the
+-- permanent backlog of transfers into locked/untracked accounts (e.g. WS TFSA, whose
+-- counterpart leg is never ingested) from swamping the real signal. See the categorize
+-- skill for reclassifying such locked-destination transfers as 'investment' at source.
 CREATE VIEW IF NOT EXISTS v_pending_transfers AS
 SELECT r.id, r.account_id, r.posted_date, r.amount_minor, r.description_norm,
        CAST(julianday('now') - julianday(r.posted_date) AS INTEGER) AS age_days
 FROM raw_txn r
 JOIN txn_interp i ON i.raw_txn_id = r.id AND i.role_hint = 'transfer'
 LEFT JOIN group_members gm ON gm.raw_txn_id = r.id
-WHERE gm.raw_txn_id IS NULL;
+WHERE gm.raw_txn_id IS NULL
+  AND (julianday('now') - julianday(r.posted_date)) <= 120;
 
 -- ADVISOR-LAYER TABLES ------------------------------------------------------
 
@@ -161,7 +167,7 @@ CREATE TABLE IF NOT EXISTS goals (     -- upserted from config [[goals]] by name
   name TEXT NOT NULL UNIQUE,
   target_minor INTEGER NOT NULL,
   currency TEXT NOT NULL DEFAULT 'CAD',
-  start_date TEXT NOT NULL,            -- progress = net savings since this date x allocation
+  start_date TEXT NOT NULL,            -- progress = net savings since this date x CURRENT allocation (no history ledger; editing allocation_pct rewrites all-time funded)
   target_date TEXT,
   allocation_pct INTEGER NOT NULL DEFAULT 100,
   funding_mode TEXT NOT NULL DEFAULT 'target_date', -- 'fixed_monthly' or 'target_date'

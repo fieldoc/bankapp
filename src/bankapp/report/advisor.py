@@ -408,6 +408,13 @@ def _monthly_cost(cadence: str, amount_minor: int) -> int:
 # worth watching).
 _CLUSTER_TOL = 0.05
 _MIN_CLUSTER = 3
+# A subscription bills on a REGULAR clock; a habit merchant (coffee, gas) can medians
+# into a cadence bucket by chance while its actual spacing is all over the map. Reject
+# when the interval spread is too high relative to the median (coefficient of variation
+# = pstdev/median). A true monthly/weekly sub sits well under this even with a skipped
+# cycle; a daily-ish habit runs far above it. (median is >= 5 here because cadence
+# classification already rejected anything closer to 0, so no divide-by-zero.)
+_CADENCE_CV_MAX = 0.6
 # price_creep must be material: > +-1% of the trailing median AND >= 25 minor
 # units, so FX wobble on a USD-billed charge (a few cents) never fires it.
 _CREEP_REL = 0.01
@@ -452,8 +459,13 @@ def detect_subscriptions(txns: Iterable[tuple]) -> list[Subscription]:
         charges.sort(key=lambda c: c[0])
         dates = [date.fromisoformat(c[0]) for c in charges]
         intervals = [(dates[i + 1] - dates[i]).days for i in range(len(dates) - 1)]
-        cadence = _classify_cadence(statistics.median(intervals))
+        median_interval = statistics.median(intervals)
+        cadence = _classify_cadence(median_interval)
         if cadence is None:
+            continue
+        # Regular clock, not just a lucky median: reject dispersed spacing (a habit
+        # merchant visited erratically). len(intervals) >= 2 here (>=3 charges).
+        if statistics.pstdev(intervals) / median_interval > _CADENCE_CV_MAX:
             continue
         amounts = [abs(c[1]) for c in charges]
         if len(_dominant_cluster(amounts)) < _MIN_CLUSTER:
@@ -567,6 +579,14 @@ def _net_since(conn: sqlite3.Connection, start_date: str, currency: str) -> int:
     return row[0] or 0
 
 
+# NOTE: `funded_minor` below applies the goal's CURRENT allocation_pct across ALL
+# net savings since start_date -- there is no per-period allocation ledger. Editing a
+# goal's allocation_pct (or archiving a peer, which frees headroom) therefore rewrites
+# the displayed all-time funded figure retroactively; the number reflects "what this
+# goal would have accrued at today's split," not a historical record. This is an
+# accepted simplification for a single-user app (see docs/reviews/2026-07-13).
+
+
 def goals_status(
     conn: sqlite3.Connection,
     today: Optional[date] = None,
@@ -584,7 +604,10 @@ def goals_status(
     out: list[GoalStatus] = []
     for g in conn.execute(sql).fetchall():
         net = _net_since(conn, g["start_date"], g["currency"])
-        funded = round(net * g["allocation_pct"] / 100)
+        # Integer-only money math (money.py bans floats): floor-divide, matching the
+        # house idiom in money.share_split. `net` may be negative in a drawdown month;
+        # `//` floors toward -inf, which is defined and fine here.
+        funded = net * g["allocation_pct"] // 100
         pct = (funded / g["target_minor"] * 100) if g["target_minor"] > 0 else 0.0
         pace = "no_target"
         if g["target_date"]:
@@ -680,11 +703,12 @@ def _changes_since_brief(conn: sqlite3.Connection, current: dict) -> dict:
         delta_minor = nw["net_worth_minor"] - prior_nw[cur]
         if delta_minor == 0:
             continue
-        delta = money.from_minor(delta_minor, cur)
-        sign = "+" if delta_minor > 0 else ""
+        # Sign goes BEFORE the $, on the magnitude: "-$18.35", never "$-18.35".
+        magnitude = money.from_minor(abs(delta_minor), cur)
+        sign = "+" if delta_minor > 0 else "-"
         changes.append({
             "kind": "net_worth",
-            "detail": f"{cur} net worth {sign}${delta} since last brief",
+            "detail": f"{cur} net worth {sign}${magnitude} since last brief",
         })
 
     return {"has_prior": True, "since": row["digest_as_of"], "changes": changes}

@@ -55,14 +55,22 @@
       subsTable.innerHTML =
         `<table class="tbl"><thead><tr><th>Merchant</th><th>Cadence</th><th class="num">Monthly</th><th class="num">Seen</th><th>Last charge</th></tr></thead><tbody>${rows}</tbody></table>`;
 
-      const exp = App.exponentFor(subs[0].currency || "CAD");
+      const subsCur = subs[0].currency || "CAD";
+      const exp = App.exponentFor(subsCur);
       new Chart(App.el("subs-chart"), {
         type: "doughnut",
         data: {
           labels: subs.map((s) => s.merchant),
           datasets: [{ data: subs.map((s) => s.monthly_cost_minor / Math.pow(10, exp)), backgroundColor: App.palette(), borderWidth: 0 }],
         },
-        options: { plugins: { legend: { position: "right" } } },
+        options: {
+          plugins: {
+            legend: { position: "right" },
+            tooltip: { callbacks: {
+              label: (ctx) => `${ctx.label}: ${App.fmtMoney(subs[ctx.dataIndex].monthly_cost_minor, subsCur)}/mo`,
+            } },
+          },
+        },
       });
     }
 

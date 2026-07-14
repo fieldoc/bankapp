@@ -397,7 +397,13 @@ def rules_add(
     except classify.InvalidPatternError as exc:
         typer.echo(f"Invalid rule: {exc}")
         raise typer.Exit(code=1)
-    typer.echo("Rule added." if added else "Rule already exists (no-op).")
+    # Unlike `rules rm`/the web API, add does NOT auto-recompute: the categorize skill
+    # adds rules in bulk then runs `finance categorize` once, so per-add recompute would
+    # be O(n^2). Remind the caller instead of leaving the queue silently unchanged.
+    if added:
+        typer.echo("Rule added. Run `finance categorize` to apply it.")
+    else:
+        typer.echo("Rule already exists (no-op).")
 
 
 @rules_app.command("list")

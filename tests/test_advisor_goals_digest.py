@@ -31,6 +31,39 @@ def test_funding_math(conn):
     assert g.funded_minor == 100000
 
 
+def test_funding_math_is_integer_floor_not_float_round(conn):
+    # net=101, alloc=33 -> 101*33/100 = 33.33. float round() -> 33; integer floor -> 33.
+    # Pick a combo where float-round and floor DISAGREE to lock in integer-only math:
+    # net=105, alloc=50 -> 5250/100 = 52.5; round() banker's-rounds to 52, floor -> 52.
+    # net=107, alloc=50 -> 5350/100 = 53.5; round() -> 54 (banker's to even? 53.5->54);
+    # floor -> 53. This asserts we floor (money.py bans float intermediates).
+    a = insert_account(conn, key="td-chequing")
+    _income(conn, a, 107, dedup="i1")
+    goalsmod.seed_from_config(conn, [_goal(name="odd", target=1000, target_date=None, alloc=50)])
+    g = advisor.goals_status(conn, today=date(2026, 6, 1))[0]
+    assert g.funded_minor == 53          # 107*50//100, not round(53.5)
+    assert isinstance(g.funded_minor, int)
+
+
+def test_funding_math_negative_net_floors(conn):
+    # A drawdown month: net is negative, funded floors toward -inf but stays an int.
+    a = insert_account(conn, key="td-chequing")
+    _income(conn, a, -107, dedup="i1")
+    goalsmod.seed_from_config(conn, [_goal(name="draw", target=1000, target_date=None, alloc=50)])
+    g = advisor.goals_status(conn, today=date(2026, 6, 1))[0]
+    assert g.funded_minor == -54         # -107*50//100 == -5350//100 == -54
+    assert isinstance(g.funded_minor, int)
+
+
+def test_funding_math_overfunded_exceeds_target(conn):
+    a = insert_account(conn, key="td-chequing")
+    _income(conn, a, 500000, dedup="i1")
+    goalsmod.seed_from_config(conn, [_goal(name="over", target=100000, target_date=None, alloc=100)])
+    g = advisor.goals_status(conn, today=date(2026, 6, 1))[0]
+    assert g.funded_minor == 500000
+    assert g.pct_complete > 100
+
+
 def test_multi_goal_allocation_split(conn):
     a = insert_account(conn, key="td-chequing")
     _income(conn, a, 100000, dedup="i1")

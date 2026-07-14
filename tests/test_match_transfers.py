@@ -1,5 +1,11 @@
+from datetime import date, timedelta
+
 from bankapp.match import transfers
 from tests.conftest import insert_account, insert_raw_txn
+
+
+def _days_ago(n: int) -> str:
+    return (date.today() - timedelta(days=n)).isoformat()
 
 
 def _hinted(conn, acct, date, amount, dedup):
@@ -46,13 +52,24 @@ def test_late_counterpart_pairs_next_run(conn):
     assert transfers.match_transfers(conn, 7, 0) == 1
 
 
-def test_pending_transfers_view_shows_lone_leg(conn):
+def test_pending_transfers_view_shows_recent_lone_leg(conn):
     a1 = insert_account(conn, key="td-chequing")
-    _hinted(conn, a1, "2026-01-15", -50000, "d1")
+    _hinted(conn, a1, _days_ago(10), -50000, "d1")
     transfers.match_transfers(conn, 7, 0)
     rows = conn.execute("SELECT id, age_days FROM v_pending_transfers").fetchall()
     assert len(rows) == 1
     assert rows[0]["age_days"] is not None
+
+
+def test_pending_transfers_view_excludes_aged_leg(conn):
+    # A leg unmatched for >120d will never match (counterpart never ingested, e.g. a
+    # transfer into a locked account) -> it must drop off the pending surface, not
+    # accumulate as permanent noise.
+    a1 = insert_account(conn, key="td-chequing")
+    _hinted(conn, a1, _days_ago(200), -50000, "d1")
+    transfers.match_transfers(conn, 7, 0)
+    rows = conn.execute("SELECT id FROM v_pending_transfers").fetchall()
+    assert rows == []
 
 
 def test_effective_view_nets_transfer_to_zero(conn):

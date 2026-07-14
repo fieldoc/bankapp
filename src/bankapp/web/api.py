@@ -1,5 +1,6 @@
-"""JSON API routes. Reads return plain dicts; the write routes at the bottom
-(categorization, goals) validate their bodies with Pydantic."""
+"""JSON API routes. Reads return plain dicts; the write routes (categorization,
+goals, receivables) validate their bodies with Pydantic and are guarded against
+cross-origin (CSRF) requests by SameOriginMiddleware (see web/security.py)."""
 
 from __future__ import annotations
 
